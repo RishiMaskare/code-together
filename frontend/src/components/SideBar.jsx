@@ -1,13 +1,26 @@
 import React from "react";
 import useAuthUser from "../hooks/useAuthUser";
 import { useLocation, Link } from "react-router";
-import { BellIcon, HandshakeIcon, HomeIcon, UserIcon } from "lucide-react";
+import { BellIcon, HandshakeIcon, HomeIcon, UserIcon, CodeIcon } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
+import { getMyCollabs } from "../lib/collab.api";
+
 const Sidebar = () => {
   const { authUser } = useAuthUser();
   const location = useLocation();
   const currentPath = location.pathname;
 
-  console.log(currentPath);
+  const { data: collabs = [] } = useQuery({
+    queryKey: ["myCollabs"],
+    queryFn: getMyCollabs,
+    refetchInterval: 30000,
+  });
+
+  const pendingCount = collabs.filter(
+    (c) => c.status === "pending" && String(c.requester) !== String(authUser?._id)
+  ).length;
+
+  const activeCount = collabs.filter((c) => c.status === "active").length;
 
   return (
     <aside className="w-64 bg-base-200 border-r border-base-300 hidden lg:flex flex-col h-screen sticky top-0">
@@ -50,6 +63,28 @@ const Sidebar = () => {
           <BellIcon className="size-5 text-base-content opacity-70" />
           <span>Notifications</span>
         </Link>
+
+        <Link
+          to="/collab"
+          className={`btn btn-ghost justify-start w-full gap-3 px-3 normal-case ${
+            currentPath.startsWith("/collab") ? "btn-active" : ""
+          }`}
+        >
+          <div className="relative">
+            <CodeIcon className="size-5 text-base-content opacity-70" />
+            {pendingCount > 0 && (
+              <span className="absolute -top-1.5 -right-1.5 bg-error text-white text-[10px] rounded-full size-4 flex items-center justify-center">
+                {pendingCount}
+              </span>
+            )}
+          </div>
+          <span>Collabs</span>
+          {activeCount > 0 && (
+            <span className="ml-auto badge badge-primary badge-sm">
+              {activeCount}
+            </span>
+          )}
+        </Link>
       </nav>
 
       {/* USER PROFILE SECTION */}
@@ -63,8 +98,8 @@ const Sidebar = () => {
           <div className="flex-1">
             <p className="font-semibold text-sm">{authUser?.fullName}</p>
             <p className="text-xs text-success flex items-center gap-1">
-                <span className="size-2 rounded-full bg-success inline-block"/>
-                Online
+              <span className="size-2 rounded-full bg-success inline-block" />
+              Online
             </p>
           </div>
         </div>

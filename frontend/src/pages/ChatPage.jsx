@@ -19,6 +19,9 @@ import ChatLoader from "../components/ChatLoader";
 import CallButton from "../components/CallButton";
 
 const STREAM_API_KEY = import.meta.env.VITE_STREAM_API_KEY;
+console.log("STREAM_API_KEY:", STREAM_API_KEY);
+console.log("GITHUB_CLIENT_ID:", import.meta.env.VITE_GITHUB_CLIENT_ID);
+
 
 const ChatPage = () => {
   const { id: targetUserId } = useParams();

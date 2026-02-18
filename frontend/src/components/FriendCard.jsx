@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { Link } from "react-router-dom"; // Updated for modern react-router
 import { capitialize } from "../lib/utils";
+import CollabButton from "./CollabButton";
 
 // --- Bio Component with "View More" Logic ---
 const ExpandableBio = ({ bio, charLimit = 80 }) => {
@@ -73,10 +74,11 @@ const FriendCard = ({ friend }) => {
         <ExpandableBio bio={friend.bio} />
         
         {/* This div makes the button stick to the bottom */}
-        <div className="mt-auto">
-            <Link to={`/chat/${friend._id}`} className="btn btn-outline w-full mt-2">
+        <div className="mt-auto flex flex-col gap-2">
+            <Link to={`/chat/${friend._id}`} className="btn btn-outline w-full">
                 Message
             </Link>
+            <CollabButton friendId={friend._id} /> 
         </div>
       </div>
     </div>

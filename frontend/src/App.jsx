@@ -6,6 +6,8 @@ import NotificationsPage from "./pages/NotificationsPage.jsx";
 import CallPage from "./pages/CallPage.jsx";
 import ChatPage from "./pages/ChatPage.jsx";
 import OnboardingPage from "./pages/OnboardingPage.jsx";
+import CollabPage from "./pages/CollabPage";
+import CollabsListPage from "./pages/CollabsListPage";
 
 import { Toaster } from "react-hot-toast";
 import PageLoader from "./components/PageLoader.jsx";
@@ -125,6 +127,9 @@ const App = () => {
             isAuthenticated ? <OnboardingPage /> : <Navigate to="/login" />
           }
         />
+        {/* // ADD routes (inside your <Routes>) */}
+        <Route path="/collab" element={<CollabsListPage />} />
+        <Route path="/collab/:collabId" element={<CollabPage />} />
       </Routes>
       <Toaster />
     </div>
