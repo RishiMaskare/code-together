@@ -27,8 +27,8 @@ const Sidebar = () => {
       <div className="p-5 border-b border-base-300">
         <Link to="/home" className="flex items-center gap-2.5">
           <HandshakeIcon className="size-9 text-primary" />
-          <span className="text-3xl font-bold font-mono bg-clip-text text-transparent bg-gradient-to-r from-primary to-secondary tracking-wider">
-            KaushalX
+          <span className="text-2xl font-bold font-mono bg-clip-text text-transparent bg-gradient-to-r from-primary to-secondary tracking-wider">
+            CodeTogether
           </span>
         </Link>
       </div>
@@ -67,7 +67,7 @@ const Sidebar = () => {
         <Link
           to="/collab"
           className={`btn btn-ghost justify-start w-full gap-3 px-3 normal-case ${
-            currentPath.startsWith("/collab") ? "btn-active" : ""
+            currentPath === "/collab" ? "btn-active" : ""
           }`}
         >
           <div className="relative">

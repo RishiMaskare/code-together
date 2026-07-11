@@ -16,6 +16,8 @@ import Layout from "./components/Layout.jsx";
 import { useThemeStore } from "./store/useThemeStore.js";
 import FriendsPage from "./pages/FriendsPage.jsx";
 import LandingPage from "./pages/LandingPage.jsx";
+import ClassroomPage from "./pages/ClassroomPage.jsx"; // Adjust path as needed
+import TeamCollabPage from "./pages/TeamCollabPage.jsx";
 
 const App = () => {
   // tanstack query
@@ -127,9 +129,44 @@ const App = () => {
             isAuthenticated ? <OnboardingPage /> : <Navigate to="/login" />
           }
         />
-        {/* // ADD routes (inside your <Routes>) */}
-        <Route path="/collab" element={<CollabsListPage />} />
+        <Route 
+          path="/collab"
+          element={
+            isAuthenticated && isOnboarded ? (
+              <Layout showSidebar={true}>
+                <CollabsListPage />
+              </Layout>
+            ) : (
+              <Navigate to={!isAuthenticated ? '/login' : '/onboarding'} />
+            )
+        } />
+        
+        {/* Existing 1-on-1 Collab Route */}
         <Route path="/collab/:collabId" element={<CollabPage />} />
+        
+        {/* ─── NEW CLASSROOM ROUTE ───────────────────────────── */}
+        <Route 
+          path="/classroom/:roomId" 
+          element={
+            isAuthenticated && isOnboarded ? (
+              <ClassroomPage />
+            ) : (
+              <Navigate to={!isAuthenticated ? '/login' : '/onboarding'} />
+            )
+          } 
+        />
+
+        {/* ─── NEW TEAM COLLAB ROUTE ─────────────────────────── */}
+        <Route 
+          path="/team-collab/:collabId" 
+          element={
+            isAuthenticated && isOnboarded ? (
+              <TeamCollabPage />
+            ) : (
+              <Navigate to={!isAuthenticated ? '/login' : '/onboarding'} />
+            )
+          } 
+        />
       </Routes>
       <Toaster />
     </div>

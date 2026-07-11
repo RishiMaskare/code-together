@@ -31,7 +31,7 @@ const LoginPage = () => {
           <div className="mb-4 flex items-center justify-start gap-2">
             <Handshake className="size-9 text-primary" />
             <span className="text-3xl font-bold font-mono bg-clip-text text-transparent bg-gradient-to-r from-primary to-secondary tracking-wider">
-              KaushalX
+              CodeTogether
             </span>
           </div>
 
@@ -49,7 +49,7 @@ const LoginPage = () => {
                   <h2 className="text-xl font-semibold">Welcome Back</h2>
                   <p className="text-sm opacity-70">
                     Sign in to your account to continue your journey with{" "}
-                    <span className="font-semibold">KaushalX</span>
+                    <span className="font-semibold">CodeTogether</span>
                   </p>
                 </div>
 
@@ -139,7 +139,7 @@ const LoginPage = () => {
                 Connect with skilled partners worldwide
               </h2>
               <p className="opacity-70">
-                Exchange skills, not money — grow together with KaushalX.
+                Exchange skills, not money — grow together with CodeTogether.
               </p>
             </div>
           </div>

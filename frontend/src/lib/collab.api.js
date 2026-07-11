@@ -1,10 +1,4 @@
-/**
- * collab.api.js
- * Add these functions to your existing frontend/src/lib/api.js
- * OR import from here in your components.
- */
-
-import { axiosInstance } from "./axios.js"; // adjust path to match your project
+import { axiosInstance } from "./axios.js";
 
 // ── Collab requests ───────────────────────────────────────────────────────────
 
@@ -28,16 +22,24 @@ export const getCollabById = (collabId) =>
 export const disconnectGithub = () =>
   axiosInstance.post("/collab/github/disconnect").then((r) => r.data);
 
-export const createCollabRepo = (collabId, repoName) =>
-  axiosInstance.post(`/collab/repo/${collabId}`, { repoName }).then((r) => r.data);
+// localFiles: [{ path: "main.js", content: "..." }, ...]
+// All local files are pushed to GitHub in one commit on repo creation
+export const createCollabRepo = (collabId, repoName, localFiles = []) =>
+  axiosInstance
+    .post(`/collab/repo/${collabId}`, { repoName, localFiles })
+    .then((r) => r.data);
 
 // ── Repo file operations ──────────────────────────────────────────────────────
 
 export const getRepoFiles = (collabId, path = "") =>
-  axiosInstance.get(`/collab/repo/${collabId}/files`, { params: { path } }).then((r) => r.data);
+  axiosInstance
+    .get(`/collab/repo/${collabId}/files`, { params: { path } })
+    .then((r) => r.data);
 
 export const getFileContent = (collabId, path) =>
-  axiosInstance.get(`/collab/repo/${collabId}/file`, { params: { path } }).then((r) => r.data);
+  axiosInstance
+    .get(`/collab/repo/${collabId}/file`, { params: { path } })
+    .then((r) => r.data);
 
 export const commitFile = (collabId, { path, content, message, sha }) =>
   axiosInstance

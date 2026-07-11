@@ -26,7 +26,7 @@ const LandingPage = () => {
                         <Link to="/" className="flex items-center gap-2">
                             <Handshake className="size-8 text-primary" />
                             <span className="text-2xl font-bold font-mono bg-clip-text text-transparent bg-gradient-to-r from-primary to-secondary tracking-wider">
-                                KaushalX
+                                CodeTogether
                             </span>
                         </Link>
                     </div>
@@ -60,7 +60,7 @@ const LandingPage = () => {
                     <div className="container mx-auto px-4 sm:px-6 lg:px-8">
                         <div className="text-center mb-12">
                             <h2 className="text-3xl font-bold">The New Way to Learn</h2>
-                            <p className="text-lg text-base-content/70 mt-2">Grow together on KaushalX.</p>
+                            <p className="text-lg text-base-content/70 mt-2">Grow together on CodeTogether.</p>
                         </div>
                         <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
                             <FeatureCard 
@@ -114,7 +114,7 @@ const LandingPage = () => {
             {/* Footer */}
             <footer className="bg-base-200 border-t border-base-300">
                 <div className="container mx-auto py-6 px-4 sm:px-6 lg:px-8 text-center text-sm text-base-content/60">
-                    <p>&copy; {new Date().getFullYear()} KaushalX. All rights reserved.</p>
+                    <p>&copy; {new Date().getFullYear()} CodeTogether. All rights reserved.</p>
                 </div>
             </footer>
         </div>
