@@ -18,7 +18,7 @@ import { registerMeetingSocketHandlers } from "./lib/meeting.socket.js";
 import { authenticateSocket } from "./lib/socketAuth.js";
 
 const app = express();
-const PORT = process.env.PORT;
+const PORT = process.env.PORT || 5001;
 
 const __dirname = path.resolve();
 
@@ -154,7 +154,7 @@ if (process.env.NODE_ENV === "production") {
   });
 }
 
-httpServer.listen(5001, () => {
-  console.log(`Server is running on port ${5001}`);
+httpServer.listen(PORT, () => {
+  console.log(`Server is running on port ${PORT}`);
   connectDB();
 });
