@@ -47,8 +47,10 @@ const OnboardingPage = () => {
   };
 
   const handleRandomAvatar = () => {
-    const idx = Math.floor(Math.random() * 100) + 1; // 1-100 included
-    const randAvatar = `https://avatar.iran.liara.run/public/${idx}.png`;
+    // avatar.iran.liara.run is offline (502); use DiceBear, which returns a PNG
+    // avatar for any seed and works directly as an <img src>.
+    const seed = Math.random().toString(36).slice(2, 10);
+    const randAvatar = `https://api.dicebear.com/9.x/adventurer/png?seed=${seed}`;
 
     setFormState({ ...formState, profilePic: randAvatar });
     toast.success("Random profile picture generated");

@@ -3,11 +3,13 @@ import { useParams, useLocation, useNavigate } from "react-router-dom";
 import Editor from "@monaco-editor/react";
 import { 
   UsersIcon, PresentationIcon, LockIcon, UnlockIcon, 
-  MonitorIcon, LogOutIcon, SparklesIcon, PlayIcon,
+  LogOutIcon, SparklesIcon, PlayIcon,
   FolderOpenIcon, UploadIcon, DownloadIcon, FileTextIcon, XIcon
 } from "lucide-react";
 import useAuthUser from "../hooks/useAuthUser.js";
 import useSocket from "../hooks/useSocket.js";
+import { formatExecutionResult } from "../lib/utils.js";
+import toast from "react-hot-toast";
 
 const LANGS = {
   javascript: { name: "JavaScript" },
@@ -33,16 +35,15 @@ const ClassroomPage = () => {
 
   // ─── STATE ─────────────────────────────────────────────────────────────
   
-  const [isCodingAllowed, setIsCodingAllowed] = useState(false);
   const [isAiAllowed, setIsAiAllowed] = useState(false);
   const [lang, setLang] = useState("javascript"); 
-  
-  const [students, setStudents] = useState([]); 
-  const [studentCodes, setStudentCodes] = useState({}); 
-  const [viewingId, setViewingId] = useState("host"); 
-  
-  const [hostCode, setHostCode] = useState("// Waiting for host to start typing...");
-  const [myStudentCode, setMyStudentCode] = useState("");
+
+  // Shared editor + turn-based control
+  const [code, setCode] = useState("// Waiting for someone to start typing...");
+  const [controllerId, setControllerId] = useState(null);   // userId currently allowed to type
+  const [controllerName, setControllerName] = useState(""); // display name of the controller
+
+  const [students, setStudents] = useState([]); // joined students (host shows the count)
 
   const [showAI, setShowAI] = useState(false);
   const [aiQuery, setAiQuery] = useState("");
@@ -58,11 +59,11 @@ const ClassroomPage = () => {
   const [resources, setResources] = useState([]); // { id, type: 'text'|'file', name, data, timestamp }
   const [resourceText, setResourceText] = useState("");
 
-  // Reference to latest state
-  const stateRef = useRef({ hostCode, isCodingAllowed, resources });
+  // Reference to latest state (used inside socket callbacks to avoid stale closures)
+  const stateRef = useRef({ code, controllerId, controllerName, isAiAllowed, resources });
   useEffect(() => {
-    stateRef.current = { hostCode, isCodingAllowed, resources };
-  }, [hostCode, isCodingAllowed, resources]);
+    stateRef.current = { code, controllerId, controllerName, isAiAllowed, resources };
+  }, [code, controllerId, controllerName, isAiAllowed, resources]);
 
   // ─── SOCKET LOGIC ──────────────────────────────────────────────────────
   
@@ -74,50 +75,65 @@ const ClassroomPage = () => {
     const onStudentJoined = ({ user, socketId }) => {
       if (!isHost) return;
       setStudents(prev => prev.find(p => p._id === user._id) ? prev : [...prev, user]);
-      socket.emit("class:sync_to_student", { 
-        socketId, 
-        content: stateRef.current.hostCode, 
-        isCodingAllowed: stateRef.current.isCodingAllowed,
-        isAiAllowed,
-        resources: stateRef.current.resources // Sync resources to late joiners!
+      // Send the new student the current shared document + who (if anyone) is editing
+      socket.emit("class:sync_to_student", {
+        socketId,
+        content: stateRef.current.code,
+        controllerId: stateRef.current.controllerId,
+        controllerName: stateRef.current.controllerName,
+        isAiAllowed: stateRef.current.isAiAllowed,
+        resources: stateRef.current.resources,
       });
     };
 
     const onStudentLeft = ({ userId }) => {
-      if (!isHost) return;
       setStudents(prev => prev.filter(p => p._id !== userId));
-      setViewingId(prev => prev === userId ? "host" : prev); 
+      // If the person who left was editing, unlock the editor for everyone
+      if (stateRef.current.controllerId === userId) {
+        setControllerId(null);
+        setControllerName("");
+        toast("The editor is now open — anyone can type.");
+      }
     };
 
-    const onStudentCodeChange = ({ userId, content }) => {
-      if (isHost) setStudentCodes(prev => ({ ...prev, [userId]: content }));
+    // A keystroke from the active controller -> update the shared document live
+    const onCodeChange = ({ content }) => {
+      setCode(content);
     };
 
-    const onInitialSync = ({ content, isCodingAllowed: allowed, isAiAllowed: aiAllowed, resources: syncedResources }) => {
+    // Someone grabbed control: lock everyone else and alert them
+    const onTakeControl = ({ userId, userName, content }) => {
+      setControllerId(userId);
+      setControllerName(userName || "");
+      if (typeof content === "string") setCode(content);
+      if (userId !== authUser._id) {
+        toast.error(`${userName || "Someone"} started editing — you are now in read-only mode.`, { id: "class-control" });
+      } else {
+        toast.success("You are now editing. Others are locked.", { id: "class-control" });
+      }
+    };
+
+    const onReleaseControl = ({ userId }) => {
+      setControllerId(null);
+      setControllerName("");
+      if (userId !== authUser._id) {
+        toast("The editor is now open — anyone can type.", { id: "class-control" });
+      }
+    };
+
+    const onInitialSync = ({ content, controllerId: cid, controllerName: cname, isAiAllowed: aiAllowed, resources: syncedResources }) => {
       if (isHost) return;
-      setHostCode(content);
-      setIsCodingAllowed(allowed);
-      setIsAiAllowed(aiAllowed);
+      if (typeof content === "string") setCode(content);
+      setControllerId(cid ?? null);
+      setControllerName(cname ?? "");
+      setIsAiAllowed(!!aiAllowed);
       if (syncedResources) setResources(syncedResources);
-      if (!allowed) setMyStudentCode(content); 
-    };
-
-    const onHostCodeChange = ({ content }) => {
-      if (isHost) return;
-      setHostCode(content);
-      if (!stateRef.current.isCodingAllowed) setMyStudentCode(content);
-    };
-
-    const onCodingAllowed = ({ allowed }) => {
-      if (isHost) return;
-      setIsCodingAllowed(allowed);
-      if (allowed) setMyStudentCode(stateRef.current.hostCode);
     };
 
     const onAiAllowed = ({ allowed }) => {
       if (isHost) return;
       setIsAiAllowed(allowed);
-      if (!allowed) setShowAI(false); 
+      if (!allowed) setShowAI(false);
     };
 
     const onReceiveResource = ({ resource }) => {
@@ -127,33 +143,26 @@ const ClassroomPage = () => {
 
     socket.on("class:student_joined", onStudentJoined);
     socket.on("class:student_left", onStudentLeft);
-    socket.on("class:student_code_change", onStudentCodeChange);
+    socket.on("class:code_change", onCodeChange);
+    socket.on("class:take_control", onTakeControl);
+    socket.on("class:release_control", onReleaseControl);
     socket.on("class:initial_sync", onInitialSync);
-    socket.on("class:host_code_change", onHostCodeChange);
-    socket.on("class:coding_allowed", onCodingAllowed);
     socket.on("class:ai_allowed", onAiAllowed);
     socket.on("class:receive_resource", onReceiveResource);
 
     return () => {
       socket.off("class:student_joined", onStudentJoined);
       socket.off("class:student_left", onStudentLeft);
-      socket.off("class:student_code_change", onStudentCodeChange);
+      socket.off("class:code_change", onCodeChange);
+      socket.off("class:take_control", onTakeControl);
+      socket.off("class:release_control", onReleaseControl);
       socket.off("class:initial_sync", onInitialSync);
-      socket.off("class:host_code_change", onHostCodeChange);
-      socket.off("class:coding_allowed", onCodingAllowed);
       socket.off("class:ai_allowed", onAiAllowed);
       socket.off("class:receive_resource", onReceiveResource);
     };
-  }, [socket, authUser, roomId, role, isHost, isAiAllowed]); 
+  }, [socket, authUser, roomId, role, isHost]); 
 
   // ─── ACTIONS ───────────────────────────────────────────────────────────
-
-  const toggleCodingAllowance = () => {
-    if (!isHost) return;
-    const newState = !isCodingAllowed;
-    setIsCodingAllowed(newState);
-    socket.emit("class:set_coding_allowed", { roomId, allowed: newState });
-  };
 
   const toggleAiAllowance = () => {
     if (!isHost) return;
@@ -163,21 +172,31 @@ const ClassroomPage = () => {
     socket.emit("class:set_ai_allowed", { roomId, allowed: newState });
   };
 
-  let currentDisplayCode = "";
-  let isReadOnly = true;
+  // Who (if anyone) currently holds the pen for the shared editor
+  const isController = !!controllerId && controllerId === authUser?._id;
+  const someoneElseEditing = !!controllerId && !isController;
+  const isReadOnly = someoneElseEditing;
 
-  if (isHost) {
-    if (viewingId === "host") {
-      currentDisplayCode = hostCode;
-      isReadOnly = false;
-    } else {
-      currentDisplayCode = studentCodes[viewingId] || "// Student hasn't typed anything yet...";
-      isReadOnly = true; 
-    }
-  } else {
-    currentDisplayCode = isCodingAllowed ? myStudentCode : hostCode;
-    isReadOnly = !isCodingAllowed; 
-  }
+  // Grab the pen: broadcast to everyone that we are now editing + hand over the current doc
+  const grabControl = (contentSnapshot) => {
+    if (!authUser?._id) return;
+    setControllerId(authUser._id);
+    setControllerName(authUser.fullName || authUser.username);
+    socket.emit("class:take_control", {
+      roomId,
+      userId: authUser._id,
+      userName: authUser.fullName || authUser.username,
+      content: contentSnapshot ?? code,
+    });
+  };
+
+  const releaseControl = () => {
+    if (!isController) return;
+    setControllerId(null);
+    setControllerName("");
+    socket.emit("class:release_control", { roomId, userId: authUser._id });
+    toast("You released control — anyone can type now.", { id: "class-control" });
+  };
 
   useEffect(() => {
     if (editorRef.current) {
@@ -187,13 +206,18 @@ const ClassroomPage = () => {
 
   const handleEditorChange = (value) => {
     const val = value || "";
-    if (isHost && viewingId === "host") {
-      setHostCode(val);
-      socket.emit("class:host_code_change", { roomId, content: val });
-    } else if (!isHost && isCodingAllowed) {
-      setMyStudentCode(val);
-      socket.emit("class:student_code_change", { roomId, userId: authUser._id, content: val });
+    // Already holding the pen -> just broadcast each keystroke
+    if (isController) {
+      setCode(val);
+      socket.emit("class:code_change", { roomId, content: val });
+      return;
     }
+    // Nobody holds the pen -> claim it on the first keystroke
+    if (!controllerId) {
+      setCode(val);
+      grabControl(val);
+    }
+    // Otherwise the editor is read-only and this won't fire
   };
 
   const runCode = async () => { /* ... Keep exact same Judge0 code here ... */
@@ -204,20 +228,11 @@ const ClassroomPage = () => {
       const backendUrl = import.meta.env.MODE === "development" ? "http://localhost:5001" : "";
       const res = await fetch(`${backendUrl}/api/collab/execute`, {
         method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include",
-        body: JSON.stringify({ language: lang, code: currentDisplayCode }),
+        body: JSON.stringify({ language: lang, code: code }),
       });
       const data = await res.json();
       if (!res.ok) { setOutput(`❌ ${data.error || "Execution failed"}`); return; }
-      if (data.compile_stderr) { setOutput(`⚠️ Compile Error:\n${data.compile_stderr}`); return; }
-      if (data.compile_code !== undefined && data.compile_code !== 0 && data.compile_stderr) { setOutput(`⚠️ Compile Error:\n${data.compile_stderr}`); return; }
-      if (data.error) { setOutput(`❌ Error:\n${data.error}`); return; }
-      const stdout = data.stdout || "";
-      const stderr = data.stderr || "";
-      if (stdout && stderr) setOutput(`${stdout}\n\n⚠️ stderr:\n${stderr}`);
-      else if (stdout) setOutput(stdout);
-      else if (stderr) setOutput(`❌ Runtime Error:\n${stderr}`);
-      else if (data.exit_code !== undefined && data.exit_code !== 0) setOutput(`⚠️ Program exited with code ${data.exit_code}`);
-      else setOutput("✅ Finished with no output.");
+      setOutput(formatExecutionResult(data));
     } catch (e) {
       setOutput(`❌ Network error: ${e.message}`);
     } finally {
@@ -226,13 +241,14 @@ const ClassroomPage = () => {
   };
 
   const askAI = async () => { /* ... Keep exact same AI code here ... */
-    if (!aiQuery.trim()) return;
-    setIsAiLoading(true); setAiResponse("");
+    const question = aiQuery.trim();
+    if (!question) return;
+    setIsAiLoading(true); setAiResponse(""); setAiQuery("");
     try {
       const backendUrl = import.meta.env.MODE === "development" ? "http://localhost:5001" : "";
       const res = await fetch(`${backendUrl}/api/collab/ask-ai`, {
         method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include",
-        body: JSON.stringify({ question: aiQuery, code: currentDisplayCode, language: lang, output: output }),
+        body: JSON.stringify({ question, code: code, language: lang, output: output }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to get AI response");
@@ -296,10 +312,20 @@ const ClassroomPage = () => {
             <PresentationIcon className="size-4" /> {roomId}
           </div>
 
-          {!isHost && (
-            <div className={`badge ${isCodingAllowed ? 'badge-success' : 'badge-warning'} gap-1`}>
-              {isCodingAllowed ? <UnlockIcon className="size-3" /> : <LockIcon className="size-3" />}
-              {isCodingAllowed ? "Coding Allowed" : "Read Only"}
+          {/* Shared editing status (visible to everyone) */}
+          <div className={`badge gap-1 ${isController ? "badge-success" : controllerId ? "badge-warning" : "badge-info"}`}>
+            {isController ? <UnlockIcon className="size-3" /> : <LockIcon className="size-3" />}
+            {isController
+              ? "You are editing"
+              : controllerId
+                ? `${controllerName || "Someone"} is editing`
+                : isHost && students.length === 0
+                  ? "Waiting for a student…"
+                  : "Editor open — start typing"}
+          </div>
+          {isHost && (
+            <div className="badge badge-outline gap-1">
+              <UsersIcon className="size-3" /> {students.length}
             </div>
           )}
         </div>
@@ -339,56 +365,46 @@ const ClassroomPage = () => {
             </button>
           )}
 
-          {/* HOST ONLY CONTROLS */}
+          {/* HOST ONLY: AI permission for students */}
           {isHost && (
-            <>
-              <button 
-                className={`btn btn-sm ${isAiAllowed ? 'btn-error' : 'btn-info'}`}
-                onClick={toggleAiAllowance}
-                title="Toggle AI for Students"
-              >
-                {isAiAllowed ? "Revoke AI" : "Allow AI"}
-              </button>
-
-              <div className="flex items-center gap-2 border-l border-r border-base-300 px-3 mx-1">
-                <MonitorIcon className="size-5 opacity-60 hidden md:block" />
-                <select 
-                  className="select select-bordered select-sm w-28 sm:w-36"
-                  value={viewingId}
-                  onChange={(e) => setViewingId(e.target.value)}
-                >
-                  <option value="host">My Screen</option>
-                  <optgroup label={`Students (${students.length})`}>
-                    {students.map(s => (
-                      <option key={s._id} value={s._id}>{s.fullName || s.username}</option>
-                    ))}
-                  </optgroup>
-                </select>
-              </div>
-
-              <button 
-                className={`btn btn-sm ${isCodingAllowed ? 'btn-error' : 'btn-success'}`}
-                onClick={toggleCodingAllowance}
-              >
-                {isCodingAllowed ? (
-                  <><LockIcon className="size-4 sm:mr-1" /> <span className="hidden sm:inline">Revoke Coding</span></>
-                ) : (
-                  <><UnlockIcon className="size-4 sm:mr-1" /> <span className="hidden sm:inline">Allow Coding</span></>
-                )}
-              </button>
-            </>
+            <button
+              className={`btn btn-sm ${isAiAllowed ? 'btn-error' : 'btn-info'}`}
+              onClick={toggleAiAllowance}
+              title="Toggle AI for Students"
+            >
+              {isAiAllowed ? "Revoke AI" : "Allow AI"}
+            </button>
           )}
+
+          {/* Turn-based control: whoever holds the pen can hand it back */}
+          {isController ? (
+            <button
+              className="btn btn-sm btn-warning"
+              onClick={releaseControl}
+              title="Let someone else edit"
+            >
+              <LockIcon className="size-4 sm:mr-1" /> <span className="hidden sm:inline">Done</span>
+            </button>
+          ) : someoneElseEditing ? (
+            <button
+              className="btn btn-sm btn-outline"
+              disabled
+              title={`${controllerName || "Someone"} is editing`}
+            >
+              <LockIcon className="size-4 sm:mr-1" /> <span className="hidden sm:inline">Locked</span>
+            </button>
+          ) : null}
         </div>
       </div>
 
       {/* ─── MAIN EDITOR & OUTPUT AREA ──────────────────────────────────── */}
       <div className="flex-1 flex flex-col overflow-hidden relative">
         
-        {isHost && viewingId !== "host" && (
+        {someoneElseEditing && (
           <div className="absolute top-4 right-8 z-10 pointer-events-none">
-            <div className="alert alert-info shadow-lg py-2">
-              <UsersIcon className="size-5" />
-              <span>Viewing student in read-only mode.</span>
+            <div className="alert alert-warning shadow-lg py-2">
+              <LockIcon className="size-5" />
+              <span>{controllerName || "Someone"} is editing — view only until they finish.</span>
             </div>
           </div>
         )}
@@ -397,7 +413,7 @@ const ClassroomPage = () => {
           <Editor
             height="100%"
             language={lang}
-            value={currentDisplayCode}
+            value={code}
             onChange={handleEditorChange}
             onMount={(ed) => {
               editorRef.current = ed;
@@ -500,15 +516,15 @@ const ClassroomPage = () => {
 
       {/* ─── AI FLOATING PANEL ───────────────────────────────────────────── */}
       {showAI && (
-        <div className="absolute bottom-6 right-6 w-80 sm:w-[26rem] bg-base-100 shadow-2xl rounded-xl border border-base-300 flex flex-col overflow-hidden z-50">
-          <div className="bg-primary text-primary-content px-4 py-3 flex justify-between items-center">
+        <div className="absolute bottom-6 right-6 w-80 sm:w-[26rem] h-[28rem] max-h-[85vh] bg-base-100 shadow-2xl rounded-xl border border-base-300 flex flex-col overflow-hidden z-50">
+          <div className="bg-primary text-primary-content px-4 py-3 flex justify-between items-center shrink-0">
             <h3 className="font-bold text-sm flex items-center gap-2">
               <SparklesIcon className="size-4" /> Code Assistant
             </h3>
-            <button onClick={() => setShowAI(false)} className="opacity-70 hover:opacity-100 transition-transform"><XIcon className="size-4" /></button>
+            <button onClick={() => { setShowAI(false); setAiResponse(""); }} title="Hide assistant" className="opacity-70 hover:opacity-100 transition-transform"><XIcon className="size-4" /></button>
           </div>
           
-          <div className="p-4 flex-1 h-80 overflow-y-auto text-sm bg-base-100 flex flex-col">
+          <div className="p-4 flex-1 min-h-0 overflow-y-auto text-sm bg-base-100 flex flex-col">
             {aiResponse ? (
               <div className="bg-base-200 p-3 rounded-lg prose prose-sm dark:prose-invert max-w-none">
                 <pre className="whitespace-pre-wrap text-xs font-sans bg-transparent p-0 m-0 text-base-content">{aiResponse}</pre>
@@ -522,7 +538,7 @@ const ClassroomPage = () => {
             {isAiLoading && <div className="text-center pt-4 mt-auto"><span className="loading loading-dots loading-md text-primary" /></div>}
           </div>
 
-          <div className="p-3 bg-base-200 border-t border-base-300">
+          <div className="p-3 bg-base-200 border-t border-base-300 shrink-0">
             <div className="flex gap-2">
               <input 
                 type="text" 

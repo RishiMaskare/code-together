@@ -55,7 +55,7 @@ export async function signup(req, res) {
       {
         userId: newUser._id,
       },
-      process.env.JWT_SECRET_KEY,
+      process.env.JWT_SECRET,
       {
         expiresIn: "7d",
       }
@@ -102,7 +102,7 @@ export async function login(req, res) {
       {
         userId: user._id,
       },
-      process.env.JWT_SECRET_KEY,
+      process.env.JWT_SECRET,
       {
         expiresIn: "7d",
       }

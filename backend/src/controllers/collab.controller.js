@@ -373,8 +373,11 @@ const JUDGE0_LANG_IDS = {
   rust:       73,
 };
 
+const toB64 = (s) => Buffer.from(String(s ?? ""), "utf8").toString("base64");
+const fromB64 = (s) => (s ? Buffer.from(s, "base64").toString("utf8") : "");
+
 export const executeCode = async (req, res) => {
-  const { language, code } = req.body;
+  const { language, code, stdin } = req.body;
 
   if (!language || !code) {
     return res.status(400).json({ error: "language and code are required" });
@@ -386,32 +389,45 @@ export const executeCode = async (req, res) => {
   }
 
   try {
-    const submitRes = await fetch(`${JUDGE0_URL}/submissions?base64_encoded=false&wait=true`, {
+    // base64_encoded=true avoids the "cannot be converted to UTF-8" 400 error
+    // that the public Judge0 CE instance returns for certain code snippets.
+    const submitRes = await fetch(`${JUDGE0_URL}/submissions?base64_encoded=true&wait=true`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         language_id: langId,
-        source_code: code,
-        stdin: "",
+        source_code: toB64(code),
+        stdin: toB64(stdin || ""),
       }),
     });
 
     if (!submitRes.ok) {
-      const text = await submitRes.text();
-      console.error("[exec] Judge0 submit failed:", submitRes.status, text);
-      return res.status(502).json({ error: `Execution API error: ${submitRes.status}` });
+      // Surface Judge0's real reason instead of a bare status code.
+      let reason = "";
+      try {
+        const errBody = await submitRes.json();
+        reason = errBody.error || errBody.message || JSON.stringify(errBody);
+      } catch {
+        reason = await submitRes.text().catch(() => "");
+      }
+      console.error("[exec] Judge0 submit failed:", submitRes.status, reason);
+      return res.status(502).json({
+        error: `Execution failed (Judge0 ${submitRes.status}): ${reason || "unknown error"}`,
+      });
     }
 
     const result = await submitRes.json();
 
     return res.json({
-      stdout:         result.stdout          || "",
-      stderr:         result.stderr          || "",
-      compile_stderr: result.compile_output  || "",
-      exit_code:      result.exit_code       ?? 0,
+      stdout:         fromB64(result.stdout),
+      stderr:         fromB64(result.stderr),
+      compile_stderr: fromB64(result.compile_output),
+      message:        fromB64(result.message),
+      exit_code:      result.exit_code,
       time:           result.time            || "",
       memory:         result.memory          || "",
       status:         result.status?.description || "",
+      status_id:      result.status?.id ?? null,
       via:            JUDGE0_URL,
     });
   } catch (e) {
@@ -478,7 +494,9 @@ export const askCodeAssistant = async (req, res) => {
 
     // Initialize inside the function to avoid startup crashes if .env loads late
     const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+    // "gemini-flash-latest" is Google's rolling alias to the latest stable Flash model.
+    // (The previously hardcoded "gemini-2.5-flash" now returns 404 for new keys.)
+    const model = genAI.getGenerativeModel({ model: "gemini-flash-latest" });
 
     const prompt = `
       You are an expert coding assistant helping a user inside a collaborative code editor.
@@ -504,6 +522,7 @@ export const askCodeAssistant = async (req, res) => {
 
   } catch (error) {
     console.error("AI Assistant Error:", error);
-    res.status(500).json({ error: "Failed to communicate with the AI assistant." });
+    const reason = error?.message || "Unknown error";
+    res.status(500).json({ error: `Failed to communicate with the AI assistant: ${reason}` });
   }
 };

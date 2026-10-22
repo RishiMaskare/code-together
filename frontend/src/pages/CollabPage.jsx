@@ -16,6 +16,8 @@ import {
 } from "../lib/collab.api";
 import useAuthUser from "../hooks/useAuthUser.js";
 import useSocket from "../hooks/useSocket.js";
+import { formatExecutionResult } from "../lib/utils.js";
+import MeetingFeature from "../features/meeting/MeetingFeature.jsx";
 
 // ── Language config (Judge0 IDs + Docs) ──────────────────────────────────────────────
 const LANGS = {
@@ -363,6 +365,17 @@ const CollabPage = () => {
     setShowOutput(true);
     setOutput("⏳ Running...");
 
+    const broadcast = (finalText) => {
+      socket?.emit("collab:run_output", {
+        collabId,
+        output: finalText,
+        language: lang,
+        filePath: selectedFile,
+        userId: authUser?._id,
+        userName: authUser?.fullName,
+      });
+    };
+
     try {
       const backendUrl = import.meta.env.MODE === "development" ? "http://localhost:5001" : "";
       const res = await fetch(`${backendUrl}/api/collab/execute`, {
@@ -378,20 +391,11 @@ const CollabPage = () => {
 
       const data = await res.json();
 
-      if (!res.ok) { setOutput(`❌ ${data.error || "Execution failed"}`); return; }
+      if (!res.ok) { const msg = `❌ ${data.error || "Execution failed"}`; setOutput(msg); broadcast(msg); return; }
 
-      if (data.compile_stderr) { setOutput(`⚠️ Compile Error:\n${data.compile_stderr}`); return; }
-      if (data.compile_code !== undefined && data.compile_code !== 0 && data.compile_stderr) { setOutput(`⚠️ Compile Error:\n${data.compile_stderr}`); return; }
-      if (data.error) { setOutput(`❌ Error:\n${data.error}`); return; }
-
-      const stdout = data.stdout || "";
-      const stderr = data.stderr || "";
-
-      if (stdout && stderr) setOutput(`${stdout}\n\n⚠️ stderr:\n${stderr}`);
-      else if (stdout) setOutput(stdout);
-      else if (stderr) setOutput(`❌ Runtime Error:\n${stderr}`);
-      else if (data.exit_code !== undefined && data.exit_code !== 0) setOutput(`⚠️ Program exited with code ${data.exit_code}`);
-      else setOutput("✅ Finished with no output.");
+      const msg = formatExecutionResult(data);
+      setOutput(msg);
+      broadcast(msg);
     } catch (e) {
       setOutput(`❌ Network error: ${e.message}`);
     } finally {
@@ -401,9 +405,11 @@ const CollabPage = () => {
 
   // ── Ask AI Assistant ──────────────────────────────────────────────────────────
   const askAI = async () => {
-    if (!aiQuery.trim()) return;
+    const question = aiQuery.trim();
+    if (!question) return;
     setIsAiLoading(true);
     setAiResponse("");
+    setAiQuery("");
 
     try {
       const backendUrl = import.meta.env.MODE === "development" ? "http://localhost:5001" : "";
@@ -412,7 +418,7 @@ const CollabPage = () => {
         headers: { "Content-Type": "application/json" },
         credentials: "include",
         body: JSON.stringify({
-          question: aiQuery,
+          question,
           code: editorContent,
           language: lang,
           output: output 
@@ -463,6 +469,19 @@ const CollabPage = () => {
       queryClient.invalidateQueries({ queryKey: ["authUser"] });
     };
 
+    // When a partner runs code, show their output if you're viewing their shared editor.
+    const onRunOutput = ({ output, userId, language, userName }) => {
+      if (String(userId) === String(authUser?._id)) return;
+      const who = userName || partner?.fullName || "Partner";
+      if (viewingFrom && String(viewingFrom) === String(userId)) {
+        setShowOutput(true);
+        setOutput(output);
+        showToast(`${who} ran ${language} — showing their output`, "info");
+      } else {
+        showToast(`${who} ran ${language}. Accept their share to see the output.`, "info");
+      }
+    };
+
     socket.on("collab:editor_change", onEditorChg);
     socket.on("collab:file_selected", onFileSelected);
     socket.on("collab:share_request", onShareReq);
@@ -471,12 +490,13 @@ const CollabPage = () => {
     socket.on("collab:share_revoked", onShareRevoked);
     socket.on("collab:committed", onCommitted);
     socket.on("collab:updated", onUpdated);
+    socket.on("collab:run_output", onRunOutput);
 
     return () => {
       socket.emit("collab:leave", { collabId, userId: authUser._id });
       ["collab:editor_change","collab:file_selected","collab:share_request",
        "collab:share_accepted","collab:share_rejected","collab:share_revoked",
-       "collab:committed","collab:updated"].forEach(e => socket.off(e));
+       "collab:committed","collab:updated","collab:run_output"].forEach(e => socket.off(e));
     };
   }, [socket, authUser?._id, collabId, viewingFrom, selectedFile, mode,
       partner?.fullName, selectGhFile, showToast, queryClient, loadRootFiles]);
@@ -815,15 +835,15 @@ const CollabPage = () => {
 
       {/* AI Floating Panel */}
       {showAI && (
-        <div className="absolute bottom-6 right-6 w-[26rem] bg-base-100 shadow-2xl rounded-xl border border-base-300 flex flex-col overflow-hidden z-50">
-          <div className="bg-primary text-primary-content px-4 py-3 flex justify-between items-center">
+        <div className="absolute bottom-6 right-6 w-[26rem] h-[28rem] max-h-[85vh] bg-base-100 shadow-2xl rounded-xl border border-base-300 flex flex-col overflow-hidden z-50">
+          <div className="bg-primary text-primary-content px-4 py-3 flex justify-between items-center shrink-0">
             <h3 className="font-bold text-sm flex items-center gap-2">
               <SparklesIcon className="size-4" /> Code Assistant
             </h3>
-            <button onClick={() => setShowAI(false)} className="opacity-70 hover:opacity-100 hover:scale-110 transition-transform">✕</button>
+            <button onClick={() => { setShowAI(false); setAiResponse(""); }} title="Hide assistant" className="opacity-70 hover:opacity-100 hover:scale-110 transition-transform">✕</button>
           </div>
           
-          <div className="p-4 flex-1 h-80 overflow-y-auto text-sm bg-base-100 flex flex-col">
+          <div className="p-4 flex-1 min-h-0 overflow-y-auto text-sm bg-base-100 flex flex-col">
             {aiResponse ? (
               <div className="bg-base-200 p-3 rounded-lg prose prose-sm dark:prose-invert max-w-none">
                 <pre className="whitespace-pre-wrap text-xs font-sans bg-transparent p-0 m-0 text-base-content">{aiResponse}</pre>
@@ -839,7 +859,7 @@ const CollabPage = () => {
             {isAiLoading && <div className="text-center pt-4 mt-auto"><span className="loading loading-dots loading-md text-primary" /></div>}
           </div>
 
-          <div className="p-3 bg-base-200 border-t border-base-300">
+          <div className="p-3 bg-base-200 border-t border-base-300 shrink-0">
             <div className="flex gap-2">
               <input 
                 type="text" 
@@ -856,6 +876,14 @@ const CollabPage = () => {
           </div>
         </div>
       )}
+
+      {/* ─── VIDEO CONFERENCE OVERLAY (non-intrusive; fixed-position) ─── */}
+      <MeetingFeature
+        roomId={collabId}
+        authUser={authUser}
+        socket={socket}
+        roomHostId={collab?.requester?._id || collab?.requester}
+      />
 
     </div>
   );

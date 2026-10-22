@@ -1,5 +1,5 @@
 import express from "express";
-import "dotenv/config";
+import "./lib/env.js";
 import cookieParser from "cookie-parser";
 import cors from "cors";
 import path from "path";
@@ -10,9 +10,12 @@ import authRoutes from "./routes/auth.route.js";
 import userRoutes from "./routes/user.route.js";
 import chatRoutes from "./routes/chat.route.js";
 import collabRoutes from "./routes/collab.route.js"; 
+import meetingRoutes from "./routes/meeting.route.js";
 
 import { connectDB } from "./lib/db.js";
 import { registerCollabSocketHandlers } from "./lib/collab.socket.js"; 
+import { registerMeetingSocketHandlers } from "./lib/meeting.socket.js";
+import { authenticateSocket } from "./lib/socketAuth.js";
 
 const app = express();
 const PORT = process.env.PORT;
@@ -46,6 +49,11 @@ app.use("/api/auth", authRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api/chat", chatRoutes);
 app.use("/api/collab", collabRoutes);
+app.use("/api", meetingRoutes);
+
+// Authenticate every socket connection from the httpOnly `jwt` cookie so that
+// meeting handlers derive identity server-side (never from event payloads).
+io.use(authenticateSocket);
 
 // Socket.io connection handler
 io.on("connection", (socket) => {
@@ -53,6 +61,9 @@ io.on("connection", (socket) => {
   
   // Existing 1-on-1 collab handlers
   registerCollabSocketHandlers(io, socket);
+
+  // Meeting control-plane + chat handlers (authenticated via socket.authUser)
+  registerMeetingSocketHandlers(io, socket);
 
   // ─── CLASSROOM SOCKET EVENTS ─────────────────────────────────────────────
   
@@ -70,9 +81,9 @@ io.on("connection", (socket) => {
     }
   });
 
-  // 2. Host syncs initial state to a newly joined student (UPDATED with AI & Resources)
-  socket.on("class:sync_to_student", ({ socketId, content, isCodingAllowed, isAiAllowed, resources }) => {
-    io.to(socketId).emit("class:initial_sync", { content, isCodingAllowed, isAiAllowed, resources });
+  // 2. Host syncs initial state to a newly joined student (shared code + controller + AI + Resources)
+  socket.on("class:sync_to_student", ({ socketId, content, controllerId, controllerName, isAiAllowed, resources }) => {
+    io.to(socketId).emit("class:initial_sync", { content, controllerId, controllerName, isAiAllowed, resources });
   });
 
   // 3. Host is typing
@@ -98,6 +109,21 @@ io.on("connection", (socket) => {
   // 5. Student is typing
   socket.on("class:student_code_change", ({ roomId, userId, content }) => {
     socket.to(`class:${roomId}`).emit("class:student_code_change", { userId, content });
+  });
+
+  // 5.5 Shared editor: the active controller broadcasts every keystroke to the room
+  socket.on("class:code_change", ({ roomId, content }) => {
+    socket.to(`class:${roomId}`).emit("class:code_change", { content, userId: socket.user?._id });
+  });
+
+  // 5.6 Turn-based control: someone takes over editing (locks everyone else, read-only)
+  socket.on("class:take_control", ({ roomId, userId, userName, content }) => {
+    io.to(`class:${roomId}`).emit("class:take_control", { userId, userName, content });
+  });
+
+  // 5.7 Release control: editor becomes open for anyone to type
+  socket.on("class:release_control", ({ roomId, userId }) => {
+    io.to(`class:${roomId}`).emit("class:release_control", { userId });
   });
 // ─── TEAM COLLAB SOCKET EVENTS ─────────────────────────────────────────────
   socket.on("team:take_control", (payload) => {

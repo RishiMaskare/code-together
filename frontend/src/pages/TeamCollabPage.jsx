@@ -16,6 +16,8 @@ import {
 } from "../lib/collab.api";
 import useAuthUser from "../hooks/useAuthUser.js";
 import useSocket from "../hooks/useSocket.js";
+import { formatExecutionResult } from "../lib/utils.js";
+import MeetingFeature from "../features/meeting/MeetingFeature.jsx";
 
 const LANGS = {
   javascript: { id: 63,  name: "JavaScript", ext: ".js",   template: "// JavaScript\nconsole.log('Hello, World!');", docs: [{ name: "MDN", url: "https://developer.mozilla.org/en-US/docs/Web/JavaScript" }] },
@@ -262,20 +264,17 @@ const TeamCollabPage = () => {
       const res = await fetch(`${backendUrl}/api/collab/execute`, { method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include", body: JSON.stringify({ language: lang, code: editorContent, filename: selectedFile || `main${cfg.ext}` }) });
       const data = await res.json();
       if (!res.ok) { setOutput(`❌ ${data.error || "Execution failed"}`); return; }
-      if (data.compile_stderr) { setOutput(`⚠️ Compile Error:\n${data.compile_stderr}`); return; }
-      if (data.compile_code !== undefined && data.compile_code !== 0 && data.compile_stderr) { setOutput(`⚠️ Compile Error:\n${data.compile_stderr}`); return; }
-      if (data.error) { setOutput(`❌ Error:\n${data.error}`); return; }
-      const stdout = data.stdout || ""; const stderr = data.stderr || "";
-      if (stdout && stderr) setOutput(`${stdout}\n\n⚠️ stderr:\n${stderr}`); else if (stdout) setOutput(stdout); else if (stderr) setOutput(`❌ Runtime Error:\n${stderr}`); else if (data.exit_code !== undefined && data.exit_code !== 0) setOutput(`⚠️ Program exited with code ${data.exit_code}`); else setOutput("✅ Finished with no output.");
+      setOutput(formatExecutionResult(data));
     } catch (e) { setOutput(`❌ Network error: ${e.message}`); } finally { setRunning(false); }
   };
 
   const askAI = async () => {
-    if (!aiQuery.trim()) return;
-    setIsAiLoading(true); setAiResponse("");
+    const question = aiQuery.trim();
+    if (!question) return;
+    setIsAiLoading(true); setAiResponse(""); setAiQuery("");
     try {
       const backendUrl = import.meta.env.MODE === "development" ? "http://localhost:5001" : "";
-      const res = await fetch(`${backendUrl}/api/collab/ask-ai`, { method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include", body: JSON.stringify({ question: aiQuery, code: editorContent, language: lang, output: output }) });
+      const res = await fetch(`${backendUrl}/api/collab/ask-ai`, { method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include", body: JSON.stringify({ question, code: editorContent, language: lang, output: output }) });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to get AI response"); setAiResponse(data.answer);
     } catch (error) { setAiResponse(`❌ Error: ${error.message}`); } finally { setIsAiLoading(false); }
@@ -568,12 +567,20 @@ const TeamCollabPage = () => {
 
       {/* AI Floating Panel */}
       {showAI && (
-        <div className="absolute bottom-6 right-6 w-[26rem] bg-base-100 shadow-2xl rounded-xl border border-base-300 flex flex-col overflow-hidden z-50">
-          <div className="bg-primary text-primary-content px-4 py-3 flex justify-between items-center"><h3 className="font-bold text-sm flex items-center gap-2"><SparklesIcon className="size-4" /> Code Assistant</h3><button onClick={() => setShowAI(false)} className="opacity-70 hover:opacity-100 transition-transform">✕</button></div>
-          <div className="p-4 flex-1 h-80 overflow-y-auto text-sm bg-base-100 flex flex-col">{aiResponse ? (<div className="bg-base-200 p-3 rounded-lg prose prose-sm dark:prose-invert max-w-none"><pre className="whitespace-pre-wrap text-xs font-sans bg-transparent p-0 m-0 text-base-content">{aiResponse}</pre></div>) : (<div className="flex-1 flex flex-col items-center justify-center opacity-60 text-center space-y-2"><SparklesIcon className="size-8" /><p className="text-xs">Ask me to explain this code, find bugs, or suggest improvements!</p></div>)}{isAiLoading && <div className="text-center pt-4 mt-auto"><span className="loading loading-dots loading-md text-primary" /></div>}</div>
-          <div className="p-3 bg-base-200 border-t border-base-300"><div className="flex gap-2"><input type="text" className="input input-bordered input-sm flex-1" placeholder="Why is my code failing?" value={aiQuery} onChange={e => setAiQuery(e.target.value)} onKeyDown={e => e.key === 'Enter' && askAI()} /><button className="btn btn-primary btn-sm" onClick={askAI} disabled={isAiLoading || !aiQuery.trim()}>Ask</button></div></div>
+        <div className="absolute bottom-6 right-6 w-[26rem] h-[28rem] max-h-[85vh] bg-base-100 shadow-2xl rounded-xl border border-base-300 flex flex-col overflow-hidden z-50">
+          <div className="bg-primary text-primary-content px-4 py-3 flex justify-between items-center shrink-0"><h3 className="font-bold text-sm flex items-center gap-2"><SparklesIcon className="size-4" /> Code Assistant</h3><button onClick={() => { setShowAI(false); setAiResponse(""); }} title="Hide assistant" className="opacity-70 hover:opacity-100 transition-transform">✕</button></div>
+          <div className="p-4 flex-1 min-h-0 overflow-y-auto text-sm bg-base-100 flex flex-col">{aiResponse ? (<div className="bg-base-200 p-3 rounded-lg prose prose-sm dark:prose-invert max-w-none"><pre className="whitespace-pre-wrap text-xs font-sans bg-transparent p-0 m-0 text-base-content">{aiResponse}</pre></div>) : (<div className="flex-1 flex flex-col items-center justify-center opacity-60 text-center space-y-2"><SparklesIcon className="size-8" /><p className="text-xs">Ask me to explain this code, find bugs, or suggest improvements!</p></div>)}{isAiLoading && <div className="text-center pt-4 mt-auto"><span className="loading loading-dots loading-md text-primary" /></div>}</div>
+          <div className="p-3 bg-base-200 border-t border-base-300 shrink-0"><div className="flex gap-2"><input type="text" className="input input-bordered input-sm flex-1" placeholder="Why is my code failing?" value={aiQuery} onChange={e => setAiQuery(e.target.value)} onKeyDown={e => e.key === 'Enter' && askAI()} /><button className="btn btn-primary btn-sm" onClick={askAI} disabled={isAiLoading || !aiQuery.trim()}>Ask</button></div></div>
         </div>
       )}
+
+      {/* ─── VIDEO CONFERENCE OVERLAY ─── */}
+      <MeetingFeature
+        roomId={collabId}
+        authUser={authUser}
+        socket={socket}
+        roomHostId={collab?.requester?._id || collab?.requester}
+      />
     </div>
   );
 };

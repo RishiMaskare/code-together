@@ -46,6 +46,17 @@ export function registerCollabSocketHandlers(io, socket) {
     socket.to(`collab:${collabId}`).emit("collab:cursor", { position, userId });
   });
 
+  // ── Run output (so partners viewing your editor also see your run results) ──
+  socket.on("collab:run_output", ({ collabId, output, language, filePath, userId, userName }) => {
+    socket.to(`collab:${collabId}`).emit("collab:run_output", {
+      output,
+      language,
+      filePath,
+      userId,
+      userName,
+    });
+  });
+
   // ── Screen / Editor Share ───────────────────────────────────────────────────
   socket.on("collab:share_request", ({ collabId, fromUserId, toUserId }) => {
     io.to(`collab:${collabId}`).emit("collab:share_request", {
