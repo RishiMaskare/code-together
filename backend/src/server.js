@@ -2,7 +2,6 @@ import express from "express";
 import "./lib/env.js";
 import cookieParser from "cookie-parser";
 import cors from "cors";
-import path from "path";
 import { createServer } from "http";
 import { Server } from "socket.io";
 
@@ -146,13 +145,6 @@ io.on("connection", (socket) => {
   });
 });
 
-if (process.env.NODE_ENV === "production") {
-  app.use(express.static(path.join(__dirname, "../frontend/dist")));
-
-  app.get("*", (req, res) => {
-    res.sendFile(path.join(__dirname, "../frontend", "dist", "index.html"));
-  });
-}
 
 httpServer.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
