@@ -19,7 +19,6 @@ import { authenticateSocket } from "./lib/socketAuth.js";
 const app = express();
 const PORT = process.env.PORT || 5001;
 
-const __dirname = path.resolve();
 
 // Wrap express app in an HTTP server so Socket.io can attach to it
 const httpServer = createServer(app);
