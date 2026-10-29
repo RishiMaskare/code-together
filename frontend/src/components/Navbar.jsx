@@ -14,7 +14,7 @@ const Navbar = () => {
   const navigate = useNavigate();
   const isChatPage = location.pathname?.startsWith("/chat");
 
-  const { logoutMutation } = useLogout();
+  const { logoutMutation, isPending } = useLogout();
 
   // Classroom Modal State
   const [showClassModal, setShowClassModal] = useState(false);
@@ -148,7 +148,12 @@ const Navbar = () => {
                 </Link>
               </div>
 
-              <button className="btn btn-ghost btn-circle" onClick={logoutMutation}>
+              <button
+                className="btn btn-ghost btn-circle"
+                onClick={() => logoutMutation()}
+                disabled={isPending}
+                title="Logout"
+              >
                 <LogOutIcon className="w-6 h-6 text-base-content opacity-70" />
               </button>
             </div>

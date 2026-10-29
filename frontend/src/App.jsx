@@ -142,7 +142,16 @@ const App = () => {
         } />
         
         {/* Existing 1-on-1 Collab Route */}
-        <Route path="/collab/:collabId" element={<CollabPage />} />
+        <Route
+          path="/collab/:collabId"
+          element={
+            isAuthenticated && isOnboarded ? (
+              <CollabPage />
+            ) : (
+              <Navigate to={!isAuthenticated ? "/login" : "/onboarding"} />
+            )
+          }
+        />
         
         {/* ─── NEW CLASSROOM ROUTE ───────────────────────────── */}
         <Route 

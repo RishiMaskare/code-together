@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams } from "react-router";
 import useAuthUser from "../hooks/useAuthUser";
 import { useQuery } from "@tanstack/react-query";
@@ -29,6 +29,7 @@ const ChatPage = () => {
   const [chatClient, setChatClient] = useState(null);
   const [channel, setChannel] = useState(null);
   const [loading, setLoading] = useState(true);
+  const chatClientRef = useRef(null);
 
   const { authUser } = useAuthUser();
 
@@ -39,6 +40,19 @@ const ChatPage = () => {
   });
 
   useEffect(() => {
+    return () => {
+      const client = chatClientRef.current;
+      chatClientRef.current = null;
+
+      if (client?.userID) {
+        client.disconnectUser().catch((error) => {
+          console.error("Error disconnecting chat:", error);
+        });
+      }
+    };
+  }, []);
+
+  useEffect(() => {
     const initChat = async () => {
       if (!tokenData?.token || !authUser) return;
 
@@ -46,6 +60,7 @@ const ChatPage = () => {
         console.log("Initializing stream chat client...");
 
         const client = StreamChat.getInstance(STREAM_API_KEY);
+        chatClientRef.current = client;
 
         await client.connectUser(
           {
