@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { Link } from "react-router";
+import { Link } from "react-router-dom";
 import { Handshake } from "lucide-react";
 import useSignup from "../hooks/useSignup.js";
 
@@ -15,8 +15,15 @@ const SignUpPage = () => {
 
   const handleSignup = (e) => {
     e.preventDefault();
+    if (isPending) return;
     signupMutation(signupData);
   };
+
+  const errorMessage =
+    error?.response?.data?.message ||
+    (error?.request
+      ? "Unable to reach the server. Please check your connection and try again."
+      : "Signup failed. Please try again.");
 
   return (
     <div
@@ -36,8 +43,8 @@ const SignUpPage = () => {
 
           {/* ERROR MESSAGE IF ANY */}
           {error && (
-            <div className="alert alert-error mb-4">
-              <span>{error.response.data.message}</span>
+            <div className="alert alert-error mb-4" role="alert">
+              <span>{errorMessage}</span>
             </div>
           )}
 
@@ -70,6 +77,7 @@ const SignUpPage = () => {
                         })
                       }
                       required
+                      disabled={isPending}
                     />
                   </div>
 
@@ -90,6 +98,7 @@ const SignUpPage = () => {
                         })
                       }
                       required
+                      disabled={isPending}
                     />
                   </div>
 
@@ -110,6 +119,8 @@ const SignUpPage = () => {
                         })
                       }
                       required
+                      minLength={6}
+                      disabled={isPending}
                     />
                     <p className="text-xs opacity-70 mt-1">
                       Password must be at least 6 characters long
@@ -123,6 +134,7 @@ const SignUpPage = () => {
                         type="checkbox"
                         className="checkbox checkbox-sm"
                         required
+                        disabled={isPending}
                       />
                       <span className="text-xs leading-tight">
                         I agree to the{" "}
@@ -138,7 +150,11 @@ const SignUpPage = () => {
                   </div>
                 </div>
 
-                <button className="btn btn-primary w-full" type="submit">
+                <button
+                  className="btn btn-primary w-full"
+                  type="submit"
+                  disabled={isPending}
+                >
                   {isPending ? (
                     <>
                       <span className="loading loading-spinner loading-xs"></span>

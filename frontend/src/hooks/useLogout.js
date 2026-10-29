@@ -21,13 +21,17 @@ const useLogout = () => {
     mutationFn: logout,
 
     onSuccess: async () => {
-      const privateQueries = {
-        predicate: (query) => privateQueryKeys.has(query.queryKey[0]),
+      const sessionQueries = {
+        predicate: (query) =>
+          query.queryKey[0] === "authUser" ||
+          privateQueryKeys.has(query.queryKey[0]),
       };
 
-      await queryClient.cancelQueries(privateQueries);
+      await queryClient.cancelQueries(sessionQueries);
+      queryClient.removeQueries({
+        predicate: (query) => privateQueryKeys.has(query.queryKey[0]),
+      });
       queryClient.setQueryData(["authUser"], null);
-      queryClient.removeQueries(privateQueries);
       navigate("/login", { replace: true });
     },
 
