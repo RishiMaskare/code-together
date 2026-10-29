@@ -1,11 +1,12 @@
 import User from "../models/User.js";
 import FriendRequest from "../models/FriendReq.js";
+import { serializeSafeUser, safeUserProjection } from "../lib/safeUser.js";
 
 export async function getRecommendedUsers(req, res) {
   try {
     const currentUserId = req.user.id;
 
-    const currentUser = await User.findById(currentUserId);
+    const currentUser = await User.findById(currentUserId).select("friends learningSkills");
 
     if (!currentUser) {
       return res.status(404).json({ message: "Current user not found" });
@@ -24,15 +25,15 @@ export async function getRecommendedUsers(req, res) {
       recommendedUsers = await User.find({
         ...baseExclusion,
         gainedSkills: { $in: currentUser.learningSkills },
-      });
+      }).select(safeUserProjection);
     }
 
     // If no skill matches (or no learningSkills), fall back to all other onboarded users
     if (recommendedUsers.length === 0) {
-      recommendedUsers = await User.find(baseExclusion);
+      recommendedUsers = await User.find(baseExclusion).select(safeUserProjection);
     }
 
-    res.status(200).json(recommendedUsers);
+    res.status(200).json(recommendedUsers.map(serializeSafeUser));
   } catch (error) {
     console.error("Error in getRecommendedUsers controller", error.message);
     res.status(500).json({ message: "Internal Server Error" });
@@ -43,9 +44,9 @@ export async function getMyFriends(req, res) {
   try {
     const user = await User.findById(req.user.id)
       .select("friends")
-      .populate("friends", "fullName profilePic gainedSkills learningSkills bio");
+      .populate("friends", "fullName email bio profilePic gainedSkills learningSkills location isOnboarded githubUsername createdAt");
 
-    res.status(200).json(user.friends);
+    res.status(200).json(user.friends.map(serializeSafeUser));
   } catch (error) {
     console.error("Error in getMyFriends controller", error.message);
     res.status(500).json({

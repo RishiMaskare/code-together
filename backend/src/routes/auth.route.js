@@ -1,6 +1,7 @@
 import express from "express";
 import { login, logout, signup } from "../controllers/auth.controller.js";
 import { protectRoute } from "../middleware/auth.middleware.js";
+import { serializeSafeUser } from "../lib/safeUser.js";
 
 import { onboard } from "../controllers/auth.controller.js";
 
@@ -14,7 +15,7 @@ router.post("/onboarding", protectRoute, onboard);
 
 // check if user is logged in
 router.get("/me", protectRoute, (req, res) => {
-  res.status(200).json({ success: true, user: req.user });
+  res.status(200).json({ success: true, user: serializeSafeUser(req.user) });
 });
 
 export default router;

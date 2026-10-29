@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { Link } from "react-router";
+import { Link } from "react-router-dom";
 import { Handshake } from "lucide-react";
 import useLogin from "../hooks/useLogin";
 
@@ -14,8 +14,15 @@ const LoginPage = () => {
 
   const handleLogin = (e) => {
     e.preventDefault();
+    if (isPending) return;
     loginMutation(loginData);
   };
+
+  const errorMessage =
+    error?.response?.data?.message ||
+    (error?.request
+      ? "Unable to reach the server. Please check your connection and try again."
+      : "Login failed. Please try again.");
 
   return (
     <div
@@ -37,8 +44,8 @@ const LoginPage = () => {
 
           {/* ERROR MESSAGE DISPLAY */}
           {error && (
-            <div className="alert alert-error mb-4">
-              <span>{error.response.data.message}</span>
+            <div className="alert alert-error mb-4" role="alert">
+              <span>{errorMessage}</span>
             </div>
           )}
 

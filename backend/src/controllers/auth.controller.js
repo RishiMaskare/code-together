@@ -1,4 +1,5 @@
 import { upsertStreamUser } from "../lib/stream.js";
+import { serializeSafeUser } from "../lib/safeUser.js";
 import User from "../models/User.js";
 import jwt from "jsonwebtoken";
 
@@ -75,10 +76,16 @@ export async function signup(req, res) {
 
     res.status(201).json({
       success: true,
-      user: newUser,
+      user: serializeSafeUser(newUser),
     });
   } catch (error) {
     console.log("Error in signup controller", error.message);
+    if (error.code === 11000) {
+      return res.status(400).json({
+        message: "Email already exists, please use a different one",
+      });
+    }
+
     res.status(500).json({
       message: "Internal Server Error",
     });
@@ -120,7 +127,7 @@ export async function login(req, res) {
 
     res.status(200).json({
       success: true,
-      user,
+      user: serializeSafeUser(user),
     });
   } catch (error) {
     console.log("Error in login controller", error.message);
@@ -143,7 +150,14 @@ export async function onboard(req, res) {
     const userId = req.user._id;
 
     // Suggested update
-    const { fullName, bio, gainedSkills, learningSkills, location } = req.body;
+    const {
+      fullName,
+      bio,
+      gainedSkills,
+      learningSkills,
+      location,
+      profilePic,
+    } = req.body;
 
     if (
       !fullName ||
@@ -163,7 +177,12 @@ export async function onboard(req, res) {
     const updatedUser = await User.findByIdAndUpdate(
       userId,
       {
-        ...req.body,
+        fullName,
+        bio,
+        gainedSkills,
+        learningSkills,
+        location,
+        profilePic,
         isOnboarded: true,
       },
       { new: true }
@@ -195,7 +214,7 @@ export async function onboard(req, res) {
 
     res.status(200).json({
       success: true,
-      user: updatedUser,
+      user: serializeSafeUser(updatedUser),
     });
   } catch (error) {
     console.error("Onboarding error");

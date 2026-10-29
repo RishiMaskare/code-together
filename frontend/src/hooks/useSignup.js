@@ -1,7 +1,7 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import toast from "react-hot-toast";
-import { signup } from "../lib/api";
+import { getAuthUser, signup } from "../lib/api";
 
 const useSignup = () => {
   const queryClient = useQueryClient();
@@ -10,13 +10,23 @@ const useSignup = () => {
   const { mutate, isPending, error } = useMutation({
     mutationFn: signup,
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ["authUser"] });
+      await queryClient.cancelQueries({ queryKey: ["authUser"] });
 
-      const authUser = queryClient.getQueryData(["authUser"])?.user;
-      if (authUser) {
-        toast.success("Account created successfully!");
-        navigate("/onboarding", { replace: true });
-      } else {
+      try {
+        const authData = await getAuthUser();
+        queryClient.setQueryData(["authUser"], authData);
+
+        if (authData?.user) {
+          toast.success("Account created successfully!");
+          navigate(authData.user.isOnboarded ? "/home" : "/onboarding", {
+            replace: true,
+          });
+        } else {
+          toast.success("Account created. Please sign in to continue.");
+          navigate("/login", { replace: true });
+        }
+      } catch {
+        queryClient.setQueryData(["authUser"], null);
         toast.success("Account created. Please sign in to continue.");
         navigate("/login", { replace: true });
       }
