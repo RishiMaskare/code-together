@@ -195,6 +195,8 @@ const CollabPage = () => {
   const [shareActive, setShareActive] = useState(false);
   const [viewingFrom, setViewingFrom] = useState(null);
   const [incomingShare, setIncomingShare] = useState(null);
+  const shareStateRef = useRef({});
+  const editorStateRef = useRef({});
 
   // toast
   const [toast, setToast] = useState(null);
@@ -222,12 +224,16 @@ const CollabPage = () => {
   const { data: collab, isLoading: loadingCollab } = useQuery({
     queryKey: ["collab", collabId],
     queryFn: () => getCollabById(collabId),
+    refetchInterval: (query) =>
+      query.state.data?.status === "pending" ? 3000 : false,
   });
 
   useEffect(() => { if (collab?.githubRepoName) setMode("github"); }, [collab?.githubRepoName]);
 
   const partner = collab?.participants?.find(p => String(p._id || p) !== String(authUser?._id));
   const amIOwner = String(collab?.githubOwner) === String(authUser?._id);
+  shareStateRef.current = { shareActive, viewingFrom };
+  editorStateRef.current = { editorContent, selectedFile, lang };
 
   // ── Connect GitHub ────────────────────────────────────────────────────────────
   const connectGithub = () => {
@@ -292,9 +298,14 @@ const CollabPage = () => {
       setSelectedFile(path);
       setLang(extToLang(path));
       setIsDirty(false);
-      socket?.emit("collab:file_selected", { collabId, filePath: path, userId: authUser?._id });
+      socket?.emit("collab:file_selected", {
+        collabId,
+        filePath: path,
+        content,
+        language: extToLang(path),
+      });
     } catch { showToast("Failed to load file", "error"); }
-  }, [collabId, socket, authUser?._id, showToast]);
+  }, [collabId, socket, showToast]);
 
   // ── Select local file ─────────────────────────────────────────────────────────
   const selectLocalFile = useCallback((node) => {
@@ -304,8 +315,13 @@ const CollabPage = () => {
     setSelectedFile(node.path);
     setLang(extToLang(node.path));
     setIsDirty(false);
-    socket?.emit("collab:file_selected", { collabId, filePath: node.path, userId: authUser?._id });
-  }, [localFiles, collabId, socket, authUser?._id]);
+    socket?.emit("collab:file_selected", {
+      collabId,
+      filePath: node.path,
+      content: f.content,
+      language: extToLang(node.path),
+    });
+  }, [localFiles, collabId, socket]);
 
   // ── Local file ops ────────────────────────────────────────────────────────────
   const createFile = () => {
@@ -354,7 +370,14 @@ const CollabPage = () => {
     setEditorContent(v);
     setIsDirty(true);
     if (mode === "local") setLocalFiles(p => p.map(f => f.path === selectedFile ? { ...f, content: v } : f));
-    if (!viewingFrom) socket?.emit("collab:editor_change", { collabId, content: v, filePath: selectedFile, userId: authUser?._id });
+    if (!viewingFrom) {
+      socket?.emit("collab:editor_change", {
+        collabId,
+        content: v,
+        filePath: selectedFile,
+        language: lang,
+      });
+    }
   };
 
   // ── Code execution ────────────────────────────────────────────────────────────
@@ -376,6 +399,8 @@ const CollabPage = () => {
         userName: authUser?.fullName,
       });
     };
+
+    broadcast("⏳ Running code...");
 
     try {
       const { data } = await axiosInstance.post("/collab/execute", {
@@ -421,13 +446,23 @@ const CollabPage = () => {
   };
 
   // ── Sockets ───────────────────────────────────────────────────────────────────
-  useEffect(() => {
-    if (!socket || !authUser?._id) return;
+  const collaborationRef = useRef({});
+  collaborationRef.current = {
+    selectedFile,
+    mode,
+    partnerName: partner?.fullName,
+    loadRootFiles,
+  };
 
-    const onEditorChg = ({ content, filePath, userId }) => {
-      if (viewingFrom === userId || selectedFile === filePath) {
+  useEffect(() => {
+    if (!socket || !authUser?._id || collab?.status !== "active") return;
+
+    const onEditorChg = ({ content, filePath, language, userId }) => {
+      const current = collaborationRef.current;
+      if (shareStateRef.current.viewingFrom === userId || current.selectedFile === filePath) {
         setEditorContent(content);
-        if (mode === "local") {
+        if (language) setLang(language);
+        if (current.mode === "local") {
           setLocalFiles((files) =>
             files.map((file) =>
               file.path === filePath ? { ...file, content } : file
@@ -436,24 +471,66 @@ const CollabPage = () => {
         }
       }
     };
-    const onFileSelected = ({ filePath, userId }) => {
-      if (viewingFrom === userId && mode === "github") selectGhFile(filePath);
+    const onFileSelected = ({ filePath, content, language, userId }) => {
+      if (String(userId) === String(authUser._id)) return;
+      setSelectedFile(filePath);
+      setLang(language || extToLang(filePath));
+      if (typeof content === "string") {
+        setEditorContent(content);
+        setIsDirty(false);
+        setLocalFiles((files) => {
+          const existing = files.find((file) => file.path === filePath);
+          return existing
+            ? files.map((file) =>
+                file.path === filePath ? { ...file, content } : file
+              )
+            : [...files, { path: filePath, content }];
+        });
+      }
+    };
+    const onSyncState = ({ content, filePath, language }) => {
+      if (typeof content !== "string" || !filePath) return;
+      setSelectedFile(filePath);
+      setEditorContent(content);
+      setLang(language || extToLang(filePath));
+      setIsDirty(false);
+      setLocalFiles((files) => {
+        const existing = files.find((file) => file.path === filePath);
+        return existing
+          ? files.map((file) =>
+              file.path === filePath ? { ...file, content } : file
+            )
+          : [...files, { path: filePath, content }];
+      });
     };
     const onShareReq = ({ fromUserId, toUserId }) => {
       if (String(toUserId) === String(authUser._id)) setIncomingShare(fromUserId);
     };
-    const onShareAccepted = ({ viewerUserId }) => {
-      if (String(viewerUserId) !== String(authUser._id)) {
+    const onShareAccepted = ({ viewerUserId, ownerUserId }) => {
+      if (String(viewerUserId) === String(authUser._id)) {
+        setViewingFrom(ownerUserId);
+      } else if (String(ownerUserId) === String(authUser._id)) {
         setShareActive(true);
-        showToast(`${partner?.fullName || "Partner"} is viewing your editor`, "info");
+        showToast(`${collaborationRef.current.partnerName || "Partner"} is viewing your editor`, "info");
+        const editor = editorStateRef.current;
+        socket.emit("collab:share_state", {
+          collabId,
+          content: editor.editorContent,
+          filePath: editor.selectedFile,
+          language: editor.lang,
+        });
       }
     };
     const onShareRejected = () => showToast("Share request declined", "info");
-    const onShareRevoked = () => { setViewingFrom(null); showToast("Screen share ended", "info"); };
+    const onShareRevoked = () => {
+      setViewingFrom(null);
+      setShareActive(false);
+      showToast("Screen share ended", "info");
+    };
     const onCommitted = ({ message, userId }) => {
       if (String(userId) !== String(authUser._id)) {
         showToast(`Partner committed: "${message}"`, "success");
-        loadRootFiles();
+        collaborationRef.current.loadRootFiles();
       }
     };
     const onUpdated = () => {
@@ -461,16 +538,34 @@ const CollabPage = () => {
       queryClient.invalidateQueries({ queryKey: ["authUser"] });
     };
 
-    // When a partner runs code, show their output if you're viewing their shared editor.
+    // Shared execution output is visible to both participants after acceptance.
+    const onShareState = ({ content, filePath, language, userId }) => {
+      if (shareStateRef.current.viewingFrom !== userId) return;
+      setEditorContent(content);
+      setSelectedFile(filePath);
+      setLang(language || extToLang(filePath));
+      setIsDirty(false);
+      setLocalFiles((files) => {
+        const existing = files.find((file) => file.path === filePath);
+        return existing
+          ? files.map((file) =>
+              file.path === filePath ? { ...file, content } : file
+            )
+          : [...files, { path: filePath, content }];
+      });
+    };
+
     const onRunOutput = ({ output, userId, language, userName }) => {
       if (String(userId) === String(authUser?._id)) return;
-      const who = userName || partner?.fullName || "Partner";
-      if (viewingFrom && String(viewingFrom) === String(userId)) {
+      const isSharing = shareStateRef.current.shareActive ||
+        String(shareStateRef.current.viewingFrom) === String(userId);
+      const who = userName || collaborationRef.current.partnerName || "Partner";
+      if (isSharing) {
         setShowOutput(true);
         setOutput(output);
-        showToast(`${who} ran ${language} — showing their output`, "info");
+        showToast(`${who} ran ${language} — showing shared output`, "info");
       } else {
-        showToast(`${who} ran ${language}. Accept their share to see the output.`, "info");
+        showToast(`${who} ran ${language}. Accept their share request to see the output.`, "info");
       }
     };
 
@@ -480,31 +575,34 @@ const CollabPage = () => {
 
     socket.on("collab:editor_change", onEditorChg);
     socket.on("collab:file_selected", onFileSelected);
+    socket.on("collab:sync_state", onSyncState);
     socket.on("collab:share_request", onShareReq);
     socket.on("collab:share_accepted", onShareAccepted);
+    socket.on("collab:share_state", onShareState);
     socket.on("collab:share_rejected", onShareRejected);
     socket.on("collab:share_revoked", onShareRevoked);
     socket.on("collab:committed", onCommitted);
     socket.on("collab:updated", onUpdated);
     socket.on("collab:run_output", onRunOutput);
     socket.on("connect", joinRoom);
-    joinRoom();
+    if (socket.connected) joinRoom();
 
     return () => {
       socket.emit("collab:leave", { collabId, userId: authUser._id });
       socket.off("connect", joinRoom);
       socket.off("collab:editor_change", onEditorChg);
       socket.off("collab:file_selected", onFileSelected);
+      socket.off("collab:sync_state", onSyncState);
       socket.off("collab:share_request", onShareReq);
       socket.off("collab:share_accepted", onShareAccepted);
+      socket.off("collab:share_state", onShareState);
       socket.off("collab:share_rejected", onShareRejected);
       socket.off("collab:share_revoked", onShareRevoked);
       socket.off("collab:committed", onCommitted);
       socket.off("collab:updated", onUpdated);
       socket.off("collab:run_output", onRunOutput);
     };
-  }, [socket, authUser?._id, collabId, viewingFrom, selectedFile, mode,
-      partner?.fullName, selectGhFile, showToast, queryClient, loadRootFiles]);
+  }, [socket, authUser?._id, collabId, collab?.status, showToast, queryClient]);
 
   // screen share helpers
   const requestShare = () => {
@@ -523,7 +621,16 @@ const CollabPage = () => {
     });
     showToast("Share request sent...", "info");
   };
-  const acceptShare = () => { setViewingFrom(incomingShare); setIncomingShare(null); socket?.emit("collab:share_accepted", { collabId, viewerUserId: authUser._id }); showToast("Viewing partner live", "success"); };
+  const acceptShare = () => {
+    const ownerUserId = incomingShare;
+    setViewingFrom(ownerUserId);
+    setIncomingShare(null);
+    socket?.emit("collab:share_accepted", {
+      collabId,
+      ownerUserId,
+    });
+    showToast("Viewing partner live", "success");
+  };
   const rejectShare = () => { setIncomingShare(null); socket?.emit("collab:share_rejected", { collabId, viewerUserId: authUser._id }); };
   const revokeShare = () => { setShareActive(false); socket?.emit("collab:share_revoked", { collabId }); showToast("Share ended", "info"); };
 
@@ -531,6 +638,23 @@ const CollabPage = () => {
 
   if (loadingCollab) return <div className="flex justify-center items-center h-screen"><span className="loading loading-spinner loading-lg" /></div>;
   if (!collab) return <div className="flex justify-center items-center h-screen"><p>Collab not found.</p></div>;
+  if (collab.status !== "active") {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center gap-4 p-6 text-center">
+        <h1 className="text-2xl font-semibold">
+          {collab.status === "pending"
+            ? "Waiting for the collaboration request to be accepted"
+            : "This collaboration is no longer active"}
+        </h1>
+        <p className="max-w-md opacity-70">
+          Editing, sharing, and running code are available after the request is accepted.
+        </p>
+        <button className="btn btn-primary" onClick={() => navigate("/collab")}>
+          Back to collaborations
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col h-screen overflow-hidden bg-base-100 relative">

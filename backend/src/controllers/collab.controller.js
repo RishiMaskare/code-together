@@ -46,6 +46,8 @@ export const acceptCollabRequest = async (req, res) => {
     if (!collab) return res.status(404).json({ message: "Collab not found" });
     if (!collab.participants.map(String).includes(req.user._id.toString()))
       return res.status(403).json({ message: "Not authorized" });
+    if (collab.status !== "pending" || String(collab.requester) === String(req.user._id))
+      return res.status(403).json({ message: "Only the invited user can accept this request" });
 
     collab.status = "active";
     await collab.save();
@@ -67,6 +69,13 @@ export const rejectCollabRequest = async (req, res) => {
     const { collabId } = req.params;
     const collab = await Collab.findById(collabId);
     if (!collab) return res.status(404).json({ message: "Collab not found" });
+    if (
+      collab.status !== "pending" ||
+      !collab.participants.map(String).includes(req.user._id.toString()) ||
+      String(collab.requester) === String(req.user._id)
+    ) {
+      return res.status(403).json({ message: "Only the invited user can reject this request" });
+    }
     collab.status = "closed";
     await collab.save();
 
@@ -97,6 +106,11 @@ export const getCollabById = async (req, res) => {
     const collab = await Collab.findById(req.params.collabId)
       .populate("participants", "-password -githubAccessToken");
     if (!collab) return res.status(404).json({ message: "Collab not found" });
+    if (!collab.participants.some((participant) =>
+      String(participant._id || participant) === String(req.user._id)
+    )) {
+      return res.status(403).json({ message: "Not authorized" });
+    }
     res.json(collab);
   } catch (err) {
     res.status(500).json({ message: "Internal server error" });
