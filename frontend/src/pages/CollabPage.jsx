@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { useParams, useNavigate, useSearchParams } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import Editor from "@monaco-editor/react";
@@ -14,9 +14,10 @@ import {
   getCollabById, createCollabRepo, getRepoFiles,
   getFileContent, commitFile,
 } from "../lib/collab.api";
+import { axiosInstance } from "../lib/axios";
 import useAuthUser from "../hooks/useAuthUser.js";
 import useSocket from "../hooks/useSocket.js";
-import { formatExecutionResult } from "../lib/utils.js";
+import { formatExecutionResult, getApiErrorMessage } from "../lib/utils.js";
 import MeetingFeature from "../features/meeting/MeetingFeature.jsx";
 
 // ── Language config (Judge0 IDs + Docs) ──────────────────────────────────────────────
@@ -377,27 +378,19 @@ const CollabPage = () => {
     };
 
     try {
-      const backendUrl = import.meta.env.MODE === "development" ? "http://localhost:5001" : "";
-      const res = await fetch(`${backendUrl}/api/collab/execute`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({
-          language: lang,
-          code: editorContent,
-          filename: selectedFile || `main${cfg.ext}`,
-        }),
+      const { data } = await axiosInstance.post("/collab/execute", {
+        language: lang,
+        code: editorContent,
+        filename: selectedFile || `main${cfg.ext}`,
       });
-
-      const data = await res.json();
-
-      if (!res.ok) { const msg = `❌ ${data.error || "Execution failed"}`; setOutput(msg); broadcast(msg); return; }
-
       const msg = formatExecutionResult(data);
       setOutput(msg);
       broadcast(msg);
-    } catch (e) {
-      setOutput(`❌ Network error: ${e.message}`);
+    } catch (error) {
+      const message = getApiErrorMessage(error, "Code execution failed");
+      const outputText = `❌ ${error.response ? message : `Network error: ${message}`}`;
+      setOutput(outputText);
+      broadcast(outputText);
     } finally {
       setRunning(false);
     }
@@ -412,25 +405,16 @@ const CollabPage = () => {
     setAiQuery("");
 
     try {
-      const backendUrl = import.meta.env.MODE === "development" ? "http://localhost:5001" : "";
-      const res = await fetch(`${backendUrl}/api/collab/ask-ai`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({
-          question,
-          code: editorContent,
-          language: lang,
-          output: output 
-        }),
+      const { data } = await axiosInstance.post("/collab/ask-ai", {
+        question,
+        code: editorContent,
+        language: lang,
+        output,
       });
 
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed to get AI response");
-      
       setAiResponse(data.answer);
     } catch (error) {
-      setAiResponse(`❌ Error: ${error.message}`);
+      setAiResponse(`❌ Error: ${getApiErrorMessage(error, "Failed to get AI response")}`);
     } finally {
       setIsAiLoading(false);
     }
@@ -439,10 +423,18 @@ const CollabPage = () => {
   // ── Sockets ───────────────────────────────────────────────────────────────────
   useEffect(() => {
     if (!socket || !authUser?._id) return;
-    socket.emit("collab:join", { collabId, userId: authUser._id });
 
     const onEditorChg = ({ content, filePath, userId }) => {
-      if (viewingFrom === userId || selectedFile === filePath) setEditorContent(content);
+      if (viewingFrom === userId || selectedFile === filePath) {
+        setEditorContent(content);
+        if (mode === "local") {
+          setLocalFiles((files) =>
+            files.map((file) =>
+              file.path === filePath ? { ...file, content } : file
+            )
+          );
+        }
+      }
     };
     const onFileSelected = ({ filePath, userId }) => {
       if (viewingFrom === userId && mode === "github") selectGhFile(filePath);
@@ -482,6 +474,10 @@ const CollabPage = () => {
       }
     };
 
+    const joinRoom = () => {
+      socket.emit("collab:join", { collabId, userId: authUser._id });
+    };
+
     socket.on("collab:editor_change", onEditorChg);
     socket.on("collab:file_selected", onFileSelected);
     socket.on("collab:share_request", onShareReq);
@@ -491,23 +487,47 @@ const CollabPage = () => {
     socket.on("collab:committed", onCommitted);
     socket.on("collab:updated", onUpdated);
     socket.on("collab:run_output", onRunOutput);
+    socket.on("connect", joinRoom);
+    joinRoom();
 
     return () => {
       socket.emit("collab:leave", { collabId, userId: authUser._id });
-      ["collab:editor_change","collab:file_selected","collab:share_request",
-       "collab:share_accepted","collab:share_rejected","collab:share_revoked",
-       "collab:committed","collab:updated","collab:run_output"].forEach(e => socket.off(e));
+      socket.off("connect", joinRoom);
+      socket.off("collab:editor_change", onEditorChg);
+      socket.off("collab:file_selected", onFileSelected);
+      socket.off("collab:share_request", onShareReq);
+      socket.off("collab:share_accepted", onShareAccepted);
+      socket.off("collab:share_rejected", onShareRejected);
+      socket.off("collab:share_revoked", onShareRevoked);
+      socket.off("collab:committed", onCommitted);
+      socket.off("collab:updated", onUpdated);
+      socket.off("collab:run_output", onRunOutput);
     };
   }, [socket, authUser?._id, collabId, viewingFrom, selectedFile, mode,
       partner?.fullName, selectGhFile, showToast, queryClient, loadRootFiles]);
 
   // screen share helpers
-  const requestShare = () => { socket?.emit("collab:share_request", { collabId, fromUserId: authUser._id, toUserId: partner?._id }); showToast("Share request sent...", "info"); };
+  const requestShare = () => {
+    if (!partner?._id) {
+      showToast("Your collaboration partner is not available yet.", "error");
+      return;
+    }
+    if (!socket?.connected) {
+      showToast("Reconnecting to collaboration. Please try again.", "error");
+      return;
+    }
+    socket.emit("collab:share_request", {
+      collabId,
+      fromUserId: authUser._id,
+      toUserId: partner._id,
+    });
+    showToast("Share request sent...", "info");
+  };
   const acceptShare = () => { setViewingFrom(incomingShare); setIncomingShare(null); socket?.emit("collab:share_accepted", { collabId, viewerUserId: authUser._id }); showToast("Viewing partner live", "success"); };
   const rejectShare = () => { setIncomingShare(null); socket?.emit("collab:share_rejected", { collabId, viewerUserId: authUser._id }); };
   const revokeShare = () => { setShareActive(false); socket?.emit("collab:share_revoked", { collabId }); showToast("Share ended", "info"); };
 
-  const localTree = buildTree(localFiles);
+  const localTree = useMemo(() => buildTree(localFiles), [localFiles]);
 
   if (loadingCollab) return <div className="flex justify-center items-center h-screen"><span className="loading loading-spinner loading-lg" /></div>;
   if (!collab) return <div className="flex justify-center items-center h-screen"><p>Collab not found.</p></div>;

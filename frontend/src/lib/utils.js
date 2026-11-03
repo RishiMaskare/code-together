@@ -4,6 +4,18 @@ export const capitialize = (str) => {
   return str.charAt(0).toUpperCase() + str.slice(1);
 };
 
+export const getApiErrorMessage = (error, fallback = "Request failed") => {
+  const responseData = error?.response?.data;
+  if (typeof responseData === "string") {
+    if (/^\s*</.test(responseData)) {
+      return `The server returned an unexpected HTML page (HTTP ${error.response.status}). Check the API URL and deployment configuration.`;
+    }
+    return responseData || fallback;
+  }
+
+  return responseData?.error || responseData?.message || error?.message || fallback;
+};
+
 // Turn a Judge0 execution result (from /api/collab/execute) into a clear,
 // human-readable output string. It prioritises real failure signals:
 //   - compile errors

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { useParams, useNavigate, useLocation } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import Editor from "@monaco-editor/react";
@@ -10,13 +10,14 @@ import {
   SparklesIcon, BookOpenIcon, UsersIcon, LockIcon
 } from "lucide-react";
 
+import { axiosInstance } from "../lib/axios.js";
 import {
   getCollabById, createCollabRepo, getRepoFiles,
   getFileContent, commitFile,
 } from "../lib/collab.api";
 import useAuthUser from "../hooks/useAuthUser.js";
 import useSocket from "../hooks/useSocket.js";
-import { formatExecutionResult } from "../lib/utils.js";
+import { formatExecutionResult, getApiErrorMessage } from "../lib/utils.js";
 import MeetingFeature from "../features/meeting/MeetingFeature.jsx";
 
 const LANGS = {
@@ -260,12 +261,16 @@ const TeamCollabPage = () => {
     const cfg = LANGS[lang]; if (!cfg) { showToast("Language not supported", "error"); return; }
     setRunning(true); setShowOutput(true); setOutput("⏳ Running...");
     try {
-      const backendUrl = import.meta.env.MODE === "development" ? "http://localhost:5001" : "";
-      const res = await fetch(`${backendUrl}/api/collab/execute`, { method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include", body: JSON.stringify({ language: lang, code: editorContent, filename: selectedFile || `main${cfg.ext}` }) });
-      const data = await res.json();
-      if (!res.ok) { setOutput(`❌ ${data.error || "Execution failed"}`); return; }
+      const { data } = await axiosInstance.post("/collab/execute", {
+        language: lang,
+        code: editorContent,
+        filename: selectedFile || `main${cfg.ext}`,
+      });
       setOutput(formatExecutionResult(data));
-    } catch (e) { setOutput(`❌ Network error: ${e.message}`); } finally { setRunning(false); }
+    } catch (error) {
+      const message = getApiErrorMessage(error, "Code execution failed");
+      setOutput(`❌ ${error.response ? message : `Network error: ${message}`}`);
+    } finally { setRunning(false); }
   };
 
   const askAI = async () => {
@@ -273,11 +278,16 @@ const TeamCollabPage = () => {
     if (!question) return;
     setIsAiLoading(true); setAiResponse(""); setAiQuery("");
     try {
-      const backendUrl = import.meta.env.MODE === "development" ? "http://localhost:5001" : "";
-      const res = await fetch(`${backendUrl}/api/collab/ask-ai`, { method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include", body: JSON.stringify({ question, code: editorContent, language: lang, output: output }) });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed to get AI response"); setAiResponse(data.answer);
-    } catch (error) { setAiResponse(`❌ Error: ${error.message}`); } finally { setIsAiLoading(false); }
+      const { data } = await axiosInstance.post("/collab/ask-ai", {
+        question,
+        code: editorContent,
+        language: lang,
+        output,
+      });
+      setAiResponse(data.answer);
+    } catch (error) {
+      setAiResponse(`❌ Error: ${getApiErrorMessage(error, "Failed to get AI response")}`);
+    } finally { setIsAiLoading(false); }
   };
 
   // ── TEAM PRESENTATION FUNCTIONS ───────────────────────
@@ -294,19 +304,41 @@ const TeamCollabPage = () => {
   };
 
   // ── SOCKET LISTENERS ──────────────────────────────────
+  const liveStateRef = useRef({});
+  liveStateRef.current = {
+    selectedFile,
+    activePresenter,
+    editorContent,
+    mode,
+    collab,
+    loadRootFiles,
+  };
+
   useEffect(() => {
     if (!socket || !authUser?._id) return;
-    socket.emit("collab:join", { collabId, userId: authUser._id });
 
-    // When someone else takes control, ask them for their current state
-    socket.emit("team:request_state", { collabId });
-
-    const onEditorChg = ({ content, filePath }) => { 
-      if (selectedFile === filePath || activePresenter) setEditorContent(content); 
+    const joinRoom = () => {
+      socket.emit("collab:join", { collabId, userId: authUser._id });
+      socket.emit("team:request_state", { collabId });
     };
-    
-    const onFileSelected = ({ filePath }) => { 
-      if (activePresenter && activePresenter !== authUser._id) {
+
+    const onEditorChg = ({ content, filePath }) => {
+      const current = liveStateRef.current;
+      if (current.selectedFile === filePath || current.activePresenter) {
+        setEditorContent(content);
+        if (current.mode === "local") {
+          setLocalFiles((files) =>
+            files.map((file) =>
+              file.path === filePath ? { ...file, content } : file
+            )
+          );
+        }
+      }
+    };
+
+    const onFileSelected = ({ filePath }) => {
+      const current = liveStateRef.current;
+      if (current.activePresenter && current.activePresenter !== authUser._id) {
         setSelectedFile(filePath);
         setLang(extToLang(filePath));
       }
@@ -314,7 +346,7 @@ const TeamCollabPage = () => {
 
     const onTakeControl = ({ userId, content, filePath }) => {
       setActivePresenter(userId);
-      if (content) setEditorContent(content);
+      if (typeof content === "string") setEditorContent(content);
       if (filePath) { setSelectedFile(filePath); setLang(extToLang(filePath)); }
     };
 
@@ -322,16 +354,25 @@ const TeamCollabPage = () => {
       setActivePresenter(null);
     };
 
-    const onCommitted = ({ message, userId }) => { 
+    const onCommitted = ({ message, userId }) => {
+      const current = liveStateRef.current;
       if (String(userId) !== String(authUser._id)) { 
-        const committer = collab?.participants?.find(p => String(p._id) === String(userId)); showToast(`${committer?.fullName || "Team member"} committed: "${message}"`, "success"); loadRootFiles(); 
+        const committer = current.collab?.participants?.find(p => String(p._id) === String(userId));
+        showToast(`${committer?.fullName || "Team member"} committed: "${message}"`, "success");
+        current.loadRootFiles();
       } 
     };
 
     // If we are currently presenting and a new user joins, send them our state
     const onStateRequested = () => {
-      if (activePresenter === authUser._id) {
-        socket.emit("team:take_control", { collabId, userId: authUser._id, content: editorContent, filePath: selectedFile });
+      const current = liveStateRef.current;
+      if (String(current.activePresenter) === String(authUser._id)) {
+        socket.emit("team:take_control", {
+          collabId,
+          userId: authUser._id,
+          content: current.editorContent,
+          filePath: current.selectedFile,
+        });
       }
     };
 
@@ -344,15 +385,24 @@ const TeamCollabPage = () => {
     socket.on("team:take_control", onTakeControl);
     socket.on("team:release_control", onReleaseControl);
     socket.on("team:request_state", onStateRequested); // Intercept sync requests
+    socket.on("connect", joinRoom);
+    joinRoom();
 
     return () => { 
       socket.emit("collab:leave", { collabId, userId: authUser._id }); 
-      ["collab:editor_change","collab:file_selected","collab:committed","collab:updated", "team:take_control", "team:release_control", "team:request_state"].forEach(e => socket.off(e)); 
+      socket.off("connect", joinRoom);
+      socket.off("collab:editor_change", onEditorChg);
+      socket.off("collab:file_selected", onFileSelected);
+      socket.off("collab:committed", onCommitted);
+      socket.off("collab:updated", onUpdated);
+      socket.off("team:take_control", onTakeControl);
+      socket.off("team:release_control", onReleaseControl);
+      socket.off("team:request_state", onStateRequested);
     };
-  }, [socket, authUser?._id, collabId, selectedFile, collab?.participants, showToast, queryClient, loadRootFiles, activePresenter, editorContent]);
+  }, [socket, authUser?._id, collabId, queryClient, showToast]);
 
 
-  const localTree = buildTree(localFiles);
+  const localTree = useMemo(() => buildTree(localFiles), [localFiles]);
 
   if (loadingCollab && !collabId.startsWith("TEAM-")) return <div className="flex justify-center items-center h-screen"><span className="loading loading-spinner loading-lg" /></div>;
   if (!collab) return <div className="flex justify-center items-center h-screen"><p>Team Collab not found.</p></div>;

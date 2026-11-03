@@ -13,7 +13,10 @@ import meetingRoutes from "./routes/meeting.route.js";
 
 import { connectDB } from "./lib/db.js";
 import { createCorsOptions } from "./lib/cors.js";
-import { registerCollabSocketHandlers } from "./lib/collab.socket.js"; 
+import {
+  registerCollabSocketHandlers,
+  registerTeamCollabSocketHandlers,
+} from "./lib/collab.socket.js";
 import { registerMeetingSocketHandlers } from "./lib/meeting.socket.js";
 import { authenticateSocket } from "./lib/socketAuth.js";
 
@@ -53,6 +56,7 @@ io.on("connection", (socket) => {
   
   // Existing 1-on-1 collab handlers
   registerCollabSocketHandlers(io, socket);
+  registerTeamCollabSocketHandlers(socket);
 
   // Meeting control-plane + chat handlers (authenticated via socket.authUser)
   registerMeetingSocketHandlers(io, socket);
@@ -117,17 +121,6 @@ io.on("connection", (socket) => {
   socket.on("class:release_control", ({ roomId, userId }) => {
     io.to(`class:${roomId}`).emit("class:release_control", { userId });
   });
-// ─── TEAM COLLAB SOCKET EVENTS ─────────────────────────────────────────────
-  socket.on("team:take_control", (payload) => {
-    // payload contains { collabId, userId, content, filePath }
-    socket.to(payload.collabId).emit("team:take_control", payload);
-  });
-
-  socket.on("team:release_control", ({ collabId }) => {
-    socket.to(collabId).emit("team:release_control");
-  });
-  // ─────────────────────────────────────────────────────────────────────────────
-
   socket.on("disconnect", () => {
     console.log("Socket disconnected:", socket.id);
     

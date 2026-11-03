@@ -1,23 +1,25 @@
+import { lazy, Suspense } from "react";
 import { Navigate, Route, Routes } from "react-router-dom";
-import HomePage from "./pages/HomePage.jsx";
-import SignUpPage from "./pages/SignUpPage.jsx";
-import LoginPage from "./pages/LoginPage.jsx";
-import NotificationsPage from "./pages/NotificationsPage.jsx";
-import CallPage from "./pages/CallPage.jsx";
-import ChatPage from "./pages/ChatPage.jsx";
-import OnboardingPage from "./pages/OnboardingPage.jsx";
-import CollabPage from "./pages/CollabPage";
-import CollabsListPage from "./pages/CollabsListPage";
 
 import { Toaster } from "react-hot-toast";
 import PageLoader from "./components/PageLoader.jsx";
 import useAuthUser from "./hooks/useAuthUser.js";
 import Layout from "./components/Layout.jsx";
 import { useThemeStore } from "./store/useThemeStore.js";
-import FriendsPage from "./pages/FriendsPage.jsx";
-import LandingPage from "./pages/LandingPage.jsx";
-import ClassroomPage from "./pages/ClassroomPage.jsx"; // Adjust path as needed
-import TeamCollabPage from "./pages/TeamCollabPage.jsx";
+
+const HomePage = lazy(() => import("./pages/HomePage.jsx"));
+const SignUpPage = lazy(() => import("./pages/SignUpPage.jsx"));
+const LoginPage = lazy(() => import("./pages/LoginPage.jsx"));
+const NotificationsPage = lazy(() => import("./pages/NotificationsPage.jsx"));
+const CallPage = lazy(() => import("./pages/CallPage.jsx"));
+const ChatPage = lazy(() => import("./pages/ChatPage.jsx"));
+const OnboardingPage = lazy(() => import("./pages/OnboardingPage.jsx"));
+const CollabPage = lazy(() => import("./pages/CollabPage.jsx"));
+const CollabsListPage = lazy(() => import("./pages/CollabsListPage.jsx"));
+const FriendsPage = lazy(() => import("./pages/FriendsPage.jsx"));
+const LandingPage = lazy(() => import("./pages/LandingPage.jsx"));
+const ClassroomPage = lazy(() => import("./pages/ClassroomPage.jsx"));
+const TeamCollabPage = lazy(() => import("./pages/TeamCollabPage.jsx"));
 
 const App = () => {
   // tanstack query
@@ -32,7 +34,8 @@ const App = () => {
 
   return (
     <div className="bg-base-100 min-h-screen" data-theme={theme}>
-      <Routes>
+      <Suspense fallback={<PageLoader />}>
+        <Routes>
         <Route
           path="/"
           element={
@@ -176,7 +179,8 @@ const App = () => {
             )
           } 
         />
-      </Routes>
+        </Routes>
+      </Suspense>
       <Toaster />
     </div>
   );

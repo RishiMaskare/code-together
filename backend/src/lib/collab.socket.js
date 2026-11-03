@@ -87,3 +87,20 @@ export function registerCollabSocketHandlers(io, socket) {
     socket.to(`collab:${collabId}`).emit("collab:committed", { filePath, message, userId });
   });
 }
+
+export function registerTeamCollabSocketHandlers(socket) {
+  socket.on("team:take_control", (payload = {}) => {
+    if (!payload.collabId) return;
+    socket.to(`collab:${payload.collabId}`).emit("team:take_control", payload);
+  });
+
+  socket.on("team:release_control", ({ collabId } = {}) => {
+    if (!collabId) return;
+    socket.to(`collab:${collabId}`).emit("team:release_control");
+  });
+
+  socket.on("team:request_state", ({ collabId } = {}) => {
+    if (!collabId) return;
+    socket.to(`collab:${collabId}`).emit("team:request_state");
+  });
+}

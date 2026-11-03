@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { io } from "socket.io-client";
 import useAuthUser from "./useAuthUser";
+import { BACKEND_ORIGIN } from "../lib/axios";
 
-const SOCKET_URL =
-  import.meta.env.MODE === "development" ? "http://localhost:5001" : "/";
+const SOCKET_URL = BACKEND_ORIGIN;
 
 const useSocket = () => {
   const { authUser } = useAuthUser();

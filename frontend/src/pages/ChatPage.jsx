@@ -13,6 +13,7 @@ import {
   Thread,
   Window,
 } from "stream-chat-react";
+import "stream-chat-react/dist/css/v2/index.css";
 import { StreamChat } from "stream-chat";
 import toast from "react-hot-toast";
 import ChatLoader from "../components/ChatLoader";

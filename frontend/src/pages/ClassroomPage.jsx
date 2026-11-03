@@ -8,7 +8,8 @@ import {
 } from "lucide-react";
 import useAuthUser from "../hooks/useAuthUser.js";
 import useSocket from "../hooks/useSocket.js";
-import { formatExecutionResult } from "../lib/utils.js";
+import { axiosInstance } from "../lib/axios.js";
+import { formatExecutionResult, getApiErrorMessage } from "../lib/utils.js";
 import toast from "react-hot-toast";
 
 const LANGS = {
@@ -225,16 +226,14 @@ const ClassroomPage = () => {
     setShowOutput(true);
     setOutput("⏳ Running...");
     try {
-      const backendUrl = import.meta.env.MODE === "development" ? "http://localhost:5001" : "";
-      const res = await fetch(`${backendUrl}/api/collab/execute`, {
-        method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include",
-        body: JSON.stringify({ language: lang, code: code }),
+      const { data } = await axiosInstance.post("/collab/execute", {
+        language: lang,
+        code,
       });
-      const data = await res.json();
-      if (!res.ok) { setOutput(`❌ ${data.error || "Execution failed"}`); return; }
       setOutput(formatExecutionResult(data));
-    } catch (e) {
-      setOutput(`❌ Network error: ${e.message}`);
+    } catch (error) {
+      const message = getApiErrorMessage(error, "Code execution failed");
+      setOutput(`❌ ${error.response ? message : `Network error: ${message}`}`);
     } finally {
       setIsRunning(false);
     }
@@ -245,15 +244,16 @@ const ClassroomPage = () => {
     if (!question) return;
     setIsAiLoading(true); setAiResponse(""); setAiQuery("");
     try {
-      const backendUrl = import.meta.env.MODE === "development" ? "http://localhost:5001" : "";
-      const res = await fetch(`${backendUrl}/api/collab/ask-ai`, {
-        method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include",
-        body: JSON.stringify({ question, code: code, language: lang, output: output }),
+      const { data } = await axiosInstance.post("/collab/ask-ai", {
+        question,
+        code,
+        language: lang,
+        output,
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed to get AI response");
       setAiResponse(data.answer);
-    } catch (error) { setAiResponse(`❌ Error: ${error.message}`); } finally { setIsAiLoading(false); }
+    } catch (error) {
+      setAiResponse(`❌ Error: ${getApiErrorMessage(error, "Failed to get AI response")}`);
+    } finally { setIsAiLoading(false); }
   };
 
   // ─── RESOURCE SHARING FUNCTIONS ─────────────────────────────────────────
