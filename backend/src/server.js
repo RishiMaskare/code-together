@@ -12,12 +12,14 @@ import collabRoutes from "./routes/collab.route.js";
 import meetingRoutes from "./routes/meeting.route.js";
 
 import { connectDB } from "./lib/db.js";
+import { createCorsOptions } from "./lib/cors.js";
 import { registerCollabSocketHandlers } from "./lib/collab.socket.js"; 
 import { registerMeetingSocketHandlers } from "./lib/meeting.socket.js";
 import { authenticateSocket } from "./lib/socketAuth.js";
 
 const app = express();
 const PORT = process.env.PORT || 5001;
+const corsOptions = createCorsOptions();
 
 
 // Wrap express app in an HTTP server so Socket.io can attach to it
@@ -25,10 +27,7 @@ const httpServer = createServer(app);
 
 // Create Socket.io server
 const io = new Server(httpServer, {
-  cors: {
-    origin: process.env.FRONTEND_URL,
-    credentials: true,
-  },
+  cors: corsOptions,
 });
 
 // Attach io to app so controllers can access it via req.app.get("io")
@@ -36,12 +35,7 @@ app.set("io", io);
 
 app.use(express.json());
 app.use(cookieParser());
-app.use(
-  cors({
-    origin: process.env.FRONTEND_URL,
-    credentials: true,
-  })
-);
+app.use(cors(corsOptions));
 
 app.use("/api/auth", authRoutes);
 app.use("/api/users", userRoutes);
