@@ -11,6 +11,8 @@
 import Collab from "../models/Collab.js";
 import Meeting from "../models/Meeting.js";
 import MeetingMessage from "../models/MeetingMessage.js";
+import { serializeMeeting } from "../controllers/meeting.controller.js";
+import { isCollabActive } from "./collabStatus.js";
 
 const oid = (v) => String(v && (v._id || v));
 
@@ -26,8 +28,9 @@ export function registerMeetingSocketHandlers(io, socket) {
     try {
       if (!authed()) return ack?.({ ok: false, error: "unauthorized" });
       const collab = await Collab.findById(roomId);
-      const member = collab && (oid(collab.requester) === socket.authUser._id ||
-        collab.participants.map(oid).includes(socket.authUser._id));
+      const member = collab && isCollabActive(collab.status) &&
+        (oid(collab.requester) === socket.authUser._id ||
+          collab.participants.map(oid).includes(socket.authUser._id));
       if (!member) {
         return ack?.({ ok: false, error: "not_member" });
       }
@@ -71,8 +74,9 @@ export function registerMeetingSocketHandlers(io, socket) {
       }
 
       const collab = await Collab.findById(meeting.roomId);
-      const isMember = collab && (oid(collab.requester) === socket.authUser._id ||
-        collab.participants.map(oid).includes(socket.authUser._id));
+      const isMember = collab && isCollabActive(collab.status) &&
+        (oid(collab.requester) === socket.authUser._id ||
+          collab.participants.map(oid).includes(socket.authUser._id));
       if (!isMember) return ack?.({ ok: false, error: "not_member" });
 
       const isHost = oid(meeting.host) === socket.authUser._id;
@@ -119,21 +123,26 @@ export function registerMeetingSocketHandlers(io, socket) {
   // ── Presence cleanup on disconnect ─────────────────────────────────────────
   socket.on("disconnect", async () => {
     if (!authed()) return;
-    // Mark this user's active admitted sessions as "left" so reconnects don't
-    // create phantom participants. (Clients reconcile via getActiveMeeting.)
     try {
       const active = await Meeting.find({
         status: "active",
         "participants.user": socket.authUser._id,
       });
       for (const m of active) {
+        const room = `collab:${oid(m.roomId)}`;
+        const roomSockets = await io.in(room).fetchSockets();
+        const userStillConnected = roomSockets.some(
+          (otherSocket) => otherSocket.authUser?._id === socket.authUser._id
+        );
+        if (userStillConnected) continue;
+
         const p = m.participants.find((x) => oid(x.user) === socket.authUser._id);
-        if (p && p.role !== "host" && p.state === "admitted") {
+        if (p && p.state === "admitted") {
           p.state = "left";
           p.updatedAt = new Date();
           await m.save();
-          io.to(`collab:${oid(m.roomId)}`).emit("meeting:participant-left", {
-            meeting: { id: oid(m._id) },
+          io.to(room).emit("meeting:participant-left", {
+            meeting: serializeMeeting(m),
             userId: socket.authUser._id,
           });
         }

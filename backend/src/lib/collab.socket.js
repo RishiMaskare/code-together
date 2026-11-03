@@ -1,4 +1,5 @@
 import Collab from "../models/Collab.js";
+import { isCollabActive } from "./collabStatus.js";
 
 /**
  * collab.socket.js
@@ -6,29 +7,17 @@ import Collab from "../models/Collab.js";
  * Attach to your existing io.on("connection") block in server.js:
  *   registerCollabSocketHandlers(io, socket, onlineUsers);
  *
- * onlineUsers is a Map<userId, socketId> — add this to your server.js too.
  */
 
-// Track online users: Map<userId, socketId>
-export const onlineUsers = new Map();
 const pendingShareRequests = new Map();
 const latestCollabState = new Map();
+const roomRevisions = new Map();
 
 export function registerCollabSocketHandlers(
   io,
   socket,
   { canJoinCollab = defaultCanJoinCollab } = {}
 ) {
-  const userId = socket.handshake.query.userId;
-
-  // Register this socket as online
-  if (userId) {
-    onlineUsers.set(userId, socket.id);
-  }
-
-  socket.on("disconnect", () => {
-    if (userId) onlineUsers.delete(userId);
-  });
 
   // ── Join a collab room ──────────────────────────────────────────────────────
   socket.on("collab:join", async ({ collabId } = {}) => {
@@ -63,8 +52,8 @@ export function registerCollabSocketHandlers(
 
     const room = `collab:${collabId}`;
     await socket.join(room);
-    socket.emit("collab:joined", { collabId });
     const currentState = latestCollabState.get(room);
+    socket.emit("collab:joined", { collabId, hasState: Boolean(currentState) });
     if (currentState) socket.emit("collab:sync_state", currentState);
     socket.to(room).emit("collab:user_joined", {
       userId: authenticatedUserId,
@@ -98,17 +87,54 @@ export function registerCollabSocketHandlers(
 
   // ── Real-time editor sync ───────────────────────────────────────────────────
   socket.on("collab:editor_change", ({ collabId, content, filePath, language } = {}) => {
-    if (!isJoinedToCollab(socket, collabId) || typeof content !== "string") return;
+    if (
+      !isJoinedToCollab(socket, collabId) ||
+      typeof content !== "string" ||
+      typeof filePath !== "string"
+    ) return;
+    const room = `collab:${collabId}`;
+    const previous = latestCollabState.get(room);
+    const files = new Map((previous?.files || []).map((file) => [file.path, file]));
+    files.set(filePath, { path: filePath, content });
     const state = {
       content,
       filePath,
       language,
       userId: socket.authUser._id,
+      files: [...files.values()],
+      revision: nextRevision(room),
     };
-    latestCollabState.set(`collab:${collabId}`, state);
-    socket.to(`collab:${collabId}`).emit("collab:editor_change", {
-      ...state,
-    });
+    latestCollabState.set(room, state);
+    socket.to(room).emit("collab:editor_change", state);
+  });
+
+  socket.on("collab:workspace_initial", ({ collabId, files, filePath, content, language } = {}) => {
+    if (!isJoinedToCollab(socket, collabId) || latestCollabState.has(`collab:${collabId}`)) return;
+    if (
+      !Array.isArray(files) ||
+      files.some((file) =>
+        !file ||
+        typeof file.path !== "string" ||
+        typeof file.content !== "string"
+      )
+    ) return;
+    const room = `collab:${collabId}`;
+    const workspace = files.map(({ path, content: fileContent }) => ({
+      path,
+      content: fileContent,
+    }));
+    const selected = workspace.find((file) => file.path === filePath);
+    if (typeof filePath !== "string" || !selected || selected.content !== content) return;
+    const state = {
+      files: workspace,
+      filePath,
+      content,
+      language,
+      userId: socket.authUser._id,
+      revision: nextRevision(room),
+    };
+    latestCollabState.set(room, state);
+    socket.to(room).emit("collab:sync_state", state);
   });
 
   socket.on("collab:cursor", ({ collabId, position } = {}) => {
@@ -203,10 +229,78 @@ export function registerCollabSocketHandlers(
       language,
       userId: socket.authUser._id,
     };
-    if (typeof content === "string") {
-      latestCollabState.set(`collab:${collabId}`, state);
+    const room = `collab:${collabId}`;
+    const previous = latestCollabState.get(room);
+    if (typeof content === "string" && typeof filePath === "string") {
+      const files = new Map((previous?.files || []).map((file) => [file.path, file]));
+      files.set(filePath, { path: filePath, content });
+      state.files = [...files.values()];
+      state.revision = nextRevision(room);
+      latestCollabState.set(room, state);
+    } else {
+      state.files = previous?.files || [];
+      state.revision = previous?.revision || nextRevision(room);
     }
-    socket.to(`collab:${collabId}`).emit("collab:file_selected", state);
+    socket.to(room).emit("collab:file_selected", state);
+  });
+
+  socket.on("collab:file_removed", ({ collabId, filePath } = {}) => {
+    if (!isJoinedToCollab(socket, collabId) || typeof filePath !== "string") return;
+    const room = `collab:${collabId}`;
+    const previous = latestCollabState.get(room);
+    if (!previous) return;
+    const files = previous.files.filter((file) => file.path !== filePath);
+    const state = {
+      ...previous,
+      files,
+      userId: socket.authUser._id,
+      revision: nextRevision(room),
+    };
+    if (state.filePath === filePath) {
+      state.filePath = files[0]?.path || null;
+      state.content = files[0]?.content || "";
+    }
+    latestCollabState.set(room, state);
+    socket.to(room).emit("collab:file_removed", {
+      filePath,
+      selectedFile: state.filePath,
+      content: state.content,
+      language: state.language,
+      files,
+      userId: state.userId,
+      revision: state.revision,
+    });
+  });
+
+  socket.on("collab:file_renamed", ({ collabId, oldPath, newPath } = {}) => {
+    if (
+      !isJoinedToCollab(socket, collabId) ||
+      typeof oldPath !== "string" ||
+      typeof newPath !== "string" ||
+      !newPath
+    ) return;
+    const room = `collab:${collabId}`;
+    const previous = latestCollabState.get(room);
+    if (!previous) return;
+    const files = previous.files.map((file) =>
+      file.path === oldPath ? { ...file, path: newPath } : file
+    );
+    const state = {
+      ...previous,
+      files,
+      filePath: previous.filePath === oldPath ? newPath : previous.filePath,
+      userId: socket.authUser._id,
+      revision: nextRevision(room),
+    };
+    latestCollabState.set(room, state);
+    socket.to(room).emit("collab:file_renamed", {
+      oldPath,
+      newPath,
+      filePath: state.filePath,
+      files,
+      userId: state.userId,
+      revision: state.revision,
+    });
   });
 
   // ── Commit notification ─────────────────────────────────────────────────────
@@ -223,7 +317,7 @@ export function registerCollabSocketHandlers(
 async function defaultCanJoinCollab(collabId, userId) {
   const collab = await Collab.findById(collabId).select("participants status");
   return (
-    collab?.status === "active" &&
+    isCollabActive(collab?.status) &&
     collab.participants.some((participant) => String(participant) === userId)
   );
 }
@@ -236,6 +330,12 @@ function isJoinedToCollab(socket, collabId) {
   );
 }
 
+function nextRevision(room) {
+  const revision = (roomRevisions.get(room) || 0) + 1;
+  roomRevisions.set(room, revision);
+  return revision;
+}
+
 function clearRoomStateIfEmpty(io, room, departingSocketId) {
   const roomMembers = io.sockets?.adapter?.rooms?.get(room);
   if (
@@ -245,6 +345,7 @@ function clearRoomStateIfEmpty(io, room, departingSocketId) {
   ) {
     latestCollabState.delete(room);
     pendingShareRequests.delete(room);
+    roomRevisions.delete(room);
   }
 }
 

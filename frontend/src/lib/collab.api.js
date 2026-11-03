@@ -2,6 +2,9 @@ import { axiosInstance } from "./axios.js";
 
 // ── Collab requests ───────────────────────────────────────────────────────────
 
+export const isCollabAccepted = (collab) =>
+  ["accepted", "active"].includes(collab?.status);
+
 export const sendCollabRequest = (friendId) =>
   axiosInstance.post(`/collab/request/${friendId}`).then((r) => r.data);
 

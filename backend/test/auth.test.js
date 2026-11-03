@@ -4,7 +4,11 @@ import express from "express";
 import { once } from "node:events";
 import test from "node:test";
 import jwt from "jsonwebtoken";
-import { login, logout } from "../src/controllers/auth.controller.js";
+import {
+  getSocketToken,
+  login,
+  logout,
+} from "../src/controllers/auth.controller.js";
 import { safeUserProjection, serializeSafeUser } from "../src/lib/safeUser.js";
 import { protectRoute } from "../src/middleware/auth.middleware.js";
 import authRoutes from "../src/routes/auth.route.js";
@@ -98,6 +102,16 @@ test("invalid login credentials are rejected", async (t) => {
   assert.equal(response.cookieArgs, undefined);
 });
 
+test("socket tokens are short-lived and scoped for socket authentication", () => {
+  const response = createResponse();
+  getSocketToken({ user: { _id: "user-1" } }, response);
+
+  const decoded = jwt.verify(response.body.token, jwtSecret);
+  assert.equal(decoded.userId, "user-1");
+  assert.equal(decoded.purpose, "socket");
+  assert.ok(decoded.exp - decoded.iat <= 5 * 60);
+});
+
 test("auth middleware accepts a valid JWT and selects safe user fields", async (t) => {
   const user = { _id: "user-1", fullName: "Test User" };
   let selectedFields;
@@ -168,6 +182,16 @@ test("GET /api/auth/me accepts a valid cookie and rejects missing or invalid coo
   assert.equal(authorizedBody.user._id, user._id);
   assert.equal("password" in authorizedBody.user, false);
   assert.equal("githubAccessToken" in authorizedBody.user, false);
+
+  const socketResponse = await fetch(
+    `http://127.0.0.1:${server.address().port}/api/auth/socket-token`,
+    { headers: { cookie: `jwt=${token}` } }
+  );
+  const socketBody = await socketResponse.json();
+  const socketClaims = jwt.verify(socketBody.token, jwtSecret);
+  assert.equal(socketResponse.status, 200);
+  assert.equal(socketClaims.userId, user._id);
+  assert.equal(socketClaims.purpose, "socket");
 
   const missingCookieResponse = await fetch(url);
   assert.equal(missingCookieResponse.status, 401);

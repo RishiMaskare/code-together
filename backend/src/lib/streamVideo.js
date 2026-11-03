@@ -31,8 +31,19 @@ export async function ensureVideoCall(streamCallId, hostUserId) {
       created_by_id: String(hostUserId),
       created_by_role: "user",
       // Backend is the authority for call lifecycle; members manage their own tracks.
-      settings_override: {},
+      settings_override: {
+        screensharing: { enabled: true },
+      },
     },
   });
   return call;
+}
+
+/** Issue a Video-specific token scoped to one call and the authenticated user. */
+export function generateVideoCallToken(streamCallId, userId) {
+  return getVideoAdmin().generateCallToken({
+    user_id: String(userId),
+    role: "user",
+    call_cids: [`default:${streamCallId}`],
+  });
 }

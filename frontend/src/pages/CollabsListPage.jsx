@@ -1,8 +1,13 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { CodeIcon, CheckCircleIcon, XCircleIcon, BellIcon } from "lucide-react";
-import { getMyCollabs, acceptCollabRequest, rejectCollabRequest } from "../lib/collab.api";
+import {
+  acceptCollabRequest,
+  getMyCollabs,
+  isCollabAccepted,
+  rejectCollabRequest,
+} from "../lib/collab.api";
 import useAuthUser from "../hooks/useAuthUser.js";
 import useSocket from "../hooks/useSocket.js";
 
@@ -14,23 +19,34 @@ const CollabsListPage = () => {
 
   // Toast for real-time notifications
   const [toast, setToast] = useState(null);
-  const showToast = (msg, type = "info") => {
+  const showToast = useCallback((msg, type = "info") => {
     setToast({ msg, type });
     setTimeout(() => setToast(null), 4000);
-  };
+  }, []);
 
   const { data: collabs = [], isLoading } = useQuery({
     queryKey: ["myCollabs"],
     queryFn: getMyCollabs,
   });
 
+  const upsertCollab = useCallback((collab) => {
+    if (!collab?._id) return;
+    queryClient.setQueryData(["myCollabs"], (current = []) => [
+      ...current.filter((item) => String(item._id) !== String(collab._id)),
+      collab,
+    ]);
+  }, [queryClient]);
+
   const { mutate: accept, isPending: accepting } = useMutation({
     mutationFn: acceptCollabRequest,
     onSuccess: (data) => {
+      upsertCollab(data);
       queryClient.invalidateQueries({ queryKey: ["myCollabs"] });
       // Navigate straight into the collab editor
       navigate(`/collab/${data._id}`);
     },
+    onError: (error) =>
+      showToast(error?.response?.data?.message || "Could not accept the request.", "error"),
   });
 
   const { mutate: reject, isPending: rejecting } = useMutation({
@@ -38,14 +54,17 @@ const CollabsListPage = () => {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["myCollabs"] });
     },
+    onError: (error) =>
+      showToast(error?.response?.data?.message || "Could not reject the request.", "error"),
   });
 
   // ── Real-time socket: listen for new incoming collab requests ────────────────
   useEffect(() => {
     if (!socket) return;
 
-    const handleNewRequest = ({ requester }) => {
+    const handleNewRequest = ({ collab, requester }) => {
       // Refresh the list so the new request appears immediately
+      upsertCollab(collab);
       queryClient.invalidateQueries({ queryKey: ["myCollabs"] });
       showToast(
         `${requester?.fullName || "Someone"} sent you a collab request!`,
@@ -53,26 +72,37 @@ const CollabsListPage = () => {
       );
     };
 
-    const handleRequestAccepted = () => {
+    const handleRequestAccepted = ({ collab } = {}) => {
+      upsertCollab(collab);
       queryClient.invalidateQueries({ queryKey: ["myCollabs"] });
       showToast("Your collab request was accepted!", "success");
     };
 
-    const handleRequestRejected = () => {
+    const handleRequestRejected = ({ collabId } = {}) => {
+      if (collabId) {
+        queryClient.setQueryData(["myCollabs"], (current = []) =>
+          current.filter((item) => String(item._id) !== String(collabId))
+        );
+      }
       queryClient.invalidateQueries({ queryKey: ["myCollabs"] });
       showToast("Your collab request was declined.", "error");
     };
+    const handleConnected = () =>
+      queryClient.invalidateQueries({ queryKey: ["myCollabs"] });
 
     socket.on("collab:new_request", handleNewRequest);
     socket.on("collab:request_accepted", handleRequestAccepted);
     socket.on("collab:request_rejected", handleRequestRejected);
+    socket.on("connect", handleConnected);
+    if (socket.connected) handleConnected();
 
     return () => {
       socket.off("collab:new_request", handleNewRequest);
       socket.off("collab:request_accepted", handleRequestAccepted);
       socket.off("collab:request_rejected", handleRequestRejected);
+      socket.off("connect", handleConnected);
     };
-  }, [socket, queryClient]);
+  }, [socket, queryClient, upsertCollab, showToast]);
 
   // Split collabs into categories
   const incomingRequests = collabs.filter(
@@ -87,7 +117,7 @@ const CollabsListPage = () => {
       String(c.requester) === String(authUser?._id)
   );
 
-  const activeCollabs = collabs.filter((c) => c.status === "active");
+  const activeCollabs = collabs.filter(isCollabAccepted);
 
   if (isLoading) {
     return (
@@ -250,6 +280,7 @@ const CollabsListPage = () => {
                       </div>
                       <div>
                         <p className="font-semibold">{other?.fullName}</p>
+                        <span className="badge badge-success badge-xs">Accepted</span>
                         {collab.githubRepoName ? (
                           <a
                             href={collab.githubRepoUrl}

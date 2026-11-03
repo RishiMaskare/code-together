@@ -1,50 +1,73 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { io } from "socket.io-client";
 import useAuthUser from "./useAuthUser";
-import { BACKEND_ORIGIN } from "../lib/axios";
+import { axiosInstance, BACKEND_ORIGIN } from "../lib/axios";
 
 const SOCKET_URL = BACKEND_ORIGIN;
 
 const useSocket = () => {
   const { authUser } = useAuthUser();
-  const socketRef = useRef(null);
+  const [socket, setSocket] = useState(null);
   const [isConnected, setIsConnected] = useState(false);
+  const [connectionError, setConnectionError] = useState(null);
 
   useEffect(() => {
-    // Only connect if user is logged in
-    if (!authUser?._id) return;
+    if (!authUser?._id) {
+      setSocket(null);
+      setIsConnected(false);
+      setConnectionError(null);
+      return;
+    }
 
-    // If already connected, don't create a new connection
-    if (socketRef.current?.connected) return;
-
-    socketRef.current = io(SOCKET_URL, {
+    let disposed = false;
+    const activeSocket = io(SOCKET_URL, {
       withCredentials: true,
-      query: { userId: authUser._id }, // sends userId to backend on connect
+      auth: (callback) => {
+        axiosInstance
+          .get("/auth/socket-token")
+          .then(({ data }) => {
+            if (!disposed) callback({ token: data.token });
+          })
+          .catch((error) => {
+            if (disposed) return;
+            setConnectionError(
+              error?.response?.data?.message || error.message || "Could not authenticate the socket."
+            );
+            callback({ token: null });
+          });
+      },
     });
+    setSocket(activeSocket);
 
-    socketRef.current.on("connect", () => {
+    activeSocket.on("connect", () => {
       setIsConnected(true);
-      console.log("Socket connected:", socketRef.current.id);
+      setConnectionError(null);
+      console.log("Socket connected:", activeSocket.id);
     });
 
-    socketRef.current.on("disconnect", () => {
+    activeSocket.on("disconnect", () => {
       setIsConnected(false);
       console.log("Socket disconnected");
     });
 
-    // Cleanup on logout / unmount
+    activeSocket.on("connect_error", (error) => {
+      setIsConnected(false);
+      setConnectionError(error.message);
+      console.error("Socket connection failed:", error);
+    });
+
     return () => {
-      if (socketRef.current) {
-        socketRef.current.disconnect();
-        socketRef.current = null;
-        setIsConnected(false);
-      }
+      disposed = true;
+      activeSocket.disconnect();
+      setSocket((current) => current === activeSocket ? null : current);
+      setIsConnected(false);
     };
   }, [authUser?._id]);
 
   return {
-    socket: socketRef.current,
+    socket,
     isConnected,
+    connectionError,
   };
 };
 

@@ -4,6 +4,7 @@ import {
   startMeeting as apiStart,
   getActiveMeeting,
   requestJoin,
+  declineMeetingInvite,
   admitParticipant,
   declineParticipant,
   removeParticipant,
@@ -25,8 +26,9 @@ export function useMeeting({ roomId, authUser, socket, roomHostId }) {
   const [meeting, setMeeting] = useState(null);
   const [joined, setJoined] = useState(false); // in-call / media allowed
   const [isJoining, setIsJoining] = useState(false);
+  const [isDeclining, setIsDeclining] = useState(false);
   const [dismissedFor, setDismissedFor] = useState(null); // meetingId we declined/dismissed
-  const bootstrapped = useRef(false);
+  const leaveInProgressRef = useRef(null);
 
   // The room's authoritative host (from collab.requester) — used before a meeting exists.
   const isRoomHost = sameId(roomHostId, myId);
@@ -35,37 +37,49 @@ export function useMeeting({ roomId, authUser, socket, roomHostId }) {
   const myState = isHost ? "admitted" : me?.state || null;
   const joinRequests = meeting?.participants?.filter((p) => p.state === "requested") || [];
 
-  // Keep the latest meeting in a ref so socket callbacks avoid stale closures.
-  const meetingRef = useRef(meeting);
-  useEffect(() => {
-    meetingRef.current = meeting;
-  }, [meeting]);
-
-  // ── Bootstrap: load any currently-active meeting (handles refresh/reconnect) ──
-  useEffect(() => {
-    if (!roomId || bootstrapped.current) return;
-    bootstrapped.current = true;
-    (async () => {
-      try {
-        const { meeting: m } = await getActiveMeeting(roomId);
-        if (m) {
-          setMeeting(m);
-          const meP = m.participants?.find((p) => sameId(p.userId, myId));
-          // Already admitted (or I'm the host) -> drop straight back into the call.
-          if (sameId(m.host, myId) || meP?.state === "admitted") setJoined(true);
-        }
-      } catch (e) {
-        console.error("load active meeting:", e);
-      }
-    })();
+  const refreshActiveMeeting = useCallback(async () => {
+    if (!roomId || !myId) return;
+    try {
+      const { meeting: activeMeeting } = await getActiveMeeting(roomId);
+      setMeeting(activeMeeting);
+      const myParticipant = activeMeeting?.participants?.find((participant) =>
+        sameId(participant.userId, myId)
+      );
+      setJoined(
+        !!activeMeeting &&
+        (sameId(activeMeeting.host, myId) || myParticipant?.state === "admitted")
+      );
+    } catch (error) {
+      console.error("load active meeting:", error);
+    }
   }, [roomId, myId]);
 
-  // ── Subscribe to the room's notification channel ─────────────────────────────
+  useEffect(() => {
+    refreshActiveMeeting();
+  }, [refreshActiveMeeting]);
+
+  // Subscribe and reconcile persisted state after every initial connection/reconnect.
   useEffect(() => {
     if (!socket || !roomId || !myId) return;
-    socket.emit("meeting:subscribe", { roomId });
-    return () => socket.emit("meeting:unsubscribe", { roomId });
-  }, [socket, roomId, myId]);
+    const subscribe = () => {
+      socket.emit("meeting:subscribe", { roomId }, (result) => {
+        if (!result?.ok) {
+          toast.error(
+            result?.error === "not_member"
+              ? "You are not a member of this collaboration."
+              : "Could not connect to meeting notifications."
+          );
+        }
+      });
+      refreshActiveMeeting();
+    };
+    socket.on("connect", subscribe);
+    if (socket.connected) subscribe();
+    return () => {
+      socket.off("connect", subscribe);
+      socket.emit("meeting:unsubscribe", { roomId });
+    };
+  }, [socket, roomId, myId, refreshActiveMeeting]);
 
   // ── Socket lifecycle wiring ─────────────────────────────────────────────────
   useEffect(() => {
@@ -87,6 +101,12 @@ export function useMeeting({ roomId, authUser, socket, roomHostId }) {
 
     const onStateUpdated = ({ meeting: m }) => setMeeting(m);
     const onJoinRequested = ({ meeting: m }) => setMeeting(m);
+    const onInviteDeclined = ({ meeting: m, userId, name }) => {
+      setMeeting(m);
+      if (sameId(m.host, myId) && !sameId(userId, myId)) {
+        toast(`${name || "A participant"} declined the meeting invite.`, { icon: "📴" });
+      }
+    };
 
     const onAdmitted = ({ meeting: m, userId }) => {
       setMeeting(m);
@@ -113,14 +133,19 @@ export function useMeeting({ roomId, authUser, socket, roomHostId }) {
       }
     };
 
-    const onLeft = ({ meeting: m }) => {
+    const onLeft = ({ meeting: m, userId }) => {
       if (m) setMeeting(m);
+      if (!sameId(userId, myId)) {
+        const departed = m?.participants?.find((participant) => sameId(participant.userId, userId));
+        toast(`${departed?.name || "A participant"} disconnected from the meeting.`, { icon: "📴" });
+      }
     };
 
     socket.on("meeting:started", onStarted);
     socket.on("meeting:ended", onEnded);
     socket.on("meeting:state-updated", onStateUpdated);
     socket.on("meeting:join-requested", onJoinRequested);
+    socket.on("meeting:invite-declined", onInviteDeclined);
     socket.on("meeting:participant-admitted", onAdmitted);
     socket.on("meeting:participant-declined", onDeclined);
     socket.on("meeting:participant-removed", onRemoved);
@@ -131,6 +156,7 @@ export function useMeeting({ roomId, authUser, socket, roomHostId }) {
       socket.off("meeting:ended", onEnded);
       socket.off("meeting:state-updated", onStateUpdated);
       socket.off("meeting:join-requested", onJoinRequested);
+      socket.off("meeting:invite-declined", onInviteDeclined);
       socket.off("meeting:participant-admitted", onAdmitted);
       socket.off("meeting:participant-declined", onDeclined);
       socket.off("meeting:participant-removed", onRemoved);
@@ -167,13 +193,17 @@ export function useMeeting({ roomId, authUser, socket, roomHostId }) {
   const leave = useCallback(async () => {
     setJoined(false);
     setIsJoining(false);
+    if (!meeting || leaveInProgressRef.current === meeting.id) return;
+    leaveInProgressRef.current = meeting.id;
     try {
-      if (meeting) {
-        const { meeting: m } = await leaveMeeting(meeting.id);
-        setMeeting(m);
-      }
+      const { meeting: updatedMeeting } = await leaveMeeting(meeting.id);
+      setMeeting(updatedMeeting);
     } catch (e) {
       console.error("leave:", e);
+    } finally {
+      if (leaveInProgressRef.current === meeting.id) {
+        leaveInProgressRef.current = null;
+      }
     }
   }, [meeting]);
 
@@ -223,9 +253,20 @@ export function useMeeting({ roomId, authUser, socket, roomHostId }) {
     }
   }, [meeting]);
 
-  const dismissIncoming = useCallback(() => {
-    if (meeting) setDismissedFor(meeting.id);
-  }, [meeting]);
+  const dismissIncoming = useCallback(async () => {
+    if (!meeting || isDeclining) return;
+    setDismissedFor(meeting.id);
+    setIsDeclining(true);
+    try {
+      const { meeting: updatedMeeting } = await declineMeetingInvite(meeting.id);
+      setMeeting(updatedMeeting);
+    } catch (error) {
+      setDismissedFor(null);
+      toast.error(error.response?.data?.message || "Could not decline the meeting invite.");
+    } finally {
+      setIsDeclining(false);
+    }
+  }, [meeting, isDeclining]);
 
   // Show the incoming popup to non-host members while an active meeting exists,
   // they are not admitted/in-call, and they haven't dismissed THIS meeting.
@@ -241,6 +282,7 @@ export function useMeeting({ roomId, authUser, socket, roomHostId }) {
     meeting,
     joined,
     isJoining,
+    isDeclining,
     isHost,
     isRoomHost,
     canStart: isRoomHost && !meeting,

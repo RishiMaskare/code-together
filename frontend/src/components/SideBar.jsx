@@ -3,7 +3,7 @@ import useAuthUser from "../hooks/useAuthUser";
 import { useLocation, Link } from "react-router";
 import { BellIcon, HandshakeIcon, HomeIcon, UserIcon, CodeIcon } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
-import { getMyCollabs } from "../lib/collab.api";
+import { getMyCollabs, isCollabAccepted } from "../lib/collab.api";
 
 const Sidebar = () => {
   const { authUser } = useAuthUser();
@@ -20,7 +20,7 @@ const Sidebar = () => {
     (c) => c.status === "pending" && String(c.requester) !== String(authUser?._id)
   ).length;
 
-  const activeCount = collabs.filter((c) => c.status === "active").length;
+  const activeCount = collabs.filter(isCollabAccepted).length;
 
   return (
     <aside className="w-64 bg-base-200 border-r border-base-300 hidden lg:flex flex-col h-screen sticky top-0">

@@ -70,3 +70,8 @@ export async function getStreamToken() {
   const response = await axiosInstance.get("/chat/token");
   return response.data;
 }
+
+export async function getDirectVideoCallToken(callId) {
+  const response = await axiosInstance.get(`/video/calls/${encodeURIComponent(callId)}/token`);
+  return response.data;
+}

@@ -53,6 +53,10 @@ io.use(authenticateSocket);
 // Socket.io connection handler
 io.on("connection", (socket) => {
   console.log("Socket connected:", socket.id);
+
+  if (socket.authUser?._id) {
+    socket.join(`user:${socket.authUser._id}`);
+  }
   
   // Existing 1-on-1 collab handlers
   registerCollabSocketHandlers(io, socket);

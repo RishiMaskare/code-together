@@ -4,6 +4,7 @@ import {
   startMeeting,
   getActiveMeeting,
   requestJoin,
+  declineMeetingInvite,
   admitParticipant,
   declineParticipant,
   removeParticipant,
@@ -11,6 +12,7 @@ import {
   setMeetingLock,
   endMeeting,
   getMediaToken,
+  getDirectVideoCallToken,
   getMessages,
 } from "../controllers/meeting.controller.js";
 
@@ -25,6 +27,7 @@ router.get("/rooms/:roomId/meetings/active", getActiveMeeting);
 
 // ── Meeting-scoped actions ───────────────────────────────────────────────────
 router.post("/meetings/:meetingId/join-request", requestJoin);
+router.post("/meetings/:meetingId/decline-invite", declineMeetingInvite);
 router.post("/meetings/:meetingId/admit/:userId", admitParticipant);
 router.post("/meetings/:meetingId/decline/:userId", declineParticipant);
 router.post("/meetings/:meetingId/remove/:userId", removeParticipant);
@@ -34,6 +37,7 @@ router.post("/meetings/:meetingId/end", endMeeting);
 
 // ── Authorization-gated resources ────────────────────────────────────────────
 router.get("/meetings/:meetingId/media-token", getMediaToken);
+router.get("/video/calls/:callId/token", getDirectVideoCallToken);
 router.get("/meetings/:meetingId/messages", getMessages);
 
 export default router;

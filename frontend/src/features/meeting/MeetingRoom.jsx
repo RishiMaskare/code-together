@@ -69,11 +69,13 @@ function MeetingChat({ socket, meetingId, myId, onClose }) {
           setStatus("ready");
         }
       } catch (e) {
-        if (alive) setStatus("error");
+        if (alive) {
+          console.error("Could not load meeting chat history:", e);
+          setStatus("error");
+        }
       }
     })();
     return () => { alive = false; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [meetingId]);
 
   useEffect(() => {
@@ -84,7 +86,6 @@ function MeetingChat({ socket, meetingId, myId, onClose }) {
     };
     socket.on("meeting:chat-message", onMsg);
     return () => socket.off("meeting:chat-message", onMsg);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [socket, meetingId]);
 
   useEffect(() => {
@@ -103,7 +104,11 @@ function MeetingChat({ socket, meetingId, myId, onClose }) {
     const clean = text.trim();
     if (!clean) return;
     socket?.emit("meeting:chat-message", { meetingId, text: clean }, (res) => {
-      if (!res?.ok && res?.error === "rate_limited") toast.error("Slow down — too many messages.");
+      if (!res?.ok) {
+        toast.error(res?.error === "rate_limited"
+          ? "Slow down — too many messages."
+          : "Message was not sent. Please try again.");
+      }
     });
     setText("");
     stickToBottom.current = true;
@@ -242,6 +247,7 @@ function MeetingInner({ meeting, myId, socket, onClose }) {
       }
       toast.success("Participant muted.");
     } catch (e) {
+      console.error("Could not mute meeting participant:", e);
       toast.error("Could not mute participant.");
     }
   };
@@ -320,6 +326,7 @@ export default function MeetingRoom({ meeting, myId, socket, actions }) {
     let cancelled = false;
     let localCall = null;
     let localClient = null;
+    let joinPromise;
 
     (async () => {
       try {
@@ -331,7 +338,8 @@ export default function MeetingRoom({ meeting, myId, socket, actions }) {
           token: t.token,
         });
         localCall = localClient.call("default", t.streamCallId);
-        await localCall.join({ create: false });
+        joinPromise = localCall.join({ create: false });
+        await joinPromise;
         if (cancelled) return;
         setClient(localClient);
         setCall(localCall);
@@ -339,17 +347,37 @@ export default function MeetingRoom({ meeting, myId, socket, actions }) {
         if (cancelled) return;
         const status = e?.response?.status || e?.status;
         if (status === 403) setError("You aren't admitted to this meeting yet.");
-        else setError("Could not connect to the meeting. Check your camera/mic permissions and connection.");
+        else if (e?.name === "NotAllowedError" || e?.name === "PermissionDeniedError") {
+          setError("Camera or microphone permission was denied. Allow access in your browser and retry.");
+        } else {
+          setError("Could not connect to the meeting. Check your camera/mic permissions and connection.");
+        }
         console.error("MeetingRoom join:", e);
       }
     })();
 
     return () => {
       cancelled = true;
-      try { localCall?.leave(); } catch { /* noop */ }
-      try { localClient?.disconnectAllPages?.(); } catch { /* noop */ }
+      void (async () => {
+        if (joinPromise) {
+          try {
+            await joinPromise;
+          } catch (cleanupError) {
+            console.warn("Stream call join did not complete before cleanup:", cleanupError);
+          }
+        }
+        try {
+          await localCall?.leave();
+        } catch (cleanupError) {
+          console.warn("Could not leave Stream call cleanly:", cleanupError);
+        }
+        try {
+          await localClient?.disconnectUser();
+        } catch (cleanupError) {
+          console.warn("Could not disconnect Stream client cleanly:", cleanupError);
+        }
+      })();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [meeting.id]);
 
   const hostCallbacks = useMemo(() => ({

@@ -34,7 +34,7 @@ const collabSchema = new mongoose.Schema(
     },
     status: {
       type: String,
-      enum: ["pending", "active", "closed"],
+      enum: ["pending", "accepted", "active", "closed"],
       default: "pending",
     },
     requester: {

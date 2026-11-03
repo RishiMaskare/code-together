@@ -1,5 +1,10 @@
 import express from "express";
-import { login, logout, signup } from "../controllers/auth.controller.js";
+import {
+  getSocketToken,
+  login,
+  logout,
+  signup,
+} from "../controllers/auth.controller.js";
 import { protectRoute } from "../middleware/auth.middleware.js";
 import { serializeSafeUser } from "../lib/safeUser.js";
 
@@ -17,5 +22,6 @@ router.post("/onboarding", protectRoute, onboard);
 router.get("/me", protectRoute, (req, res) => {
   res.status(200).json({ success: true, user: serializeSafeUser(req.user) });
 });
+router.get("/socket-token", protectRoute, getSocketToken);
 
 export default router;

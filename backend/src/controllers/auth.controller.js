@@ -145,6 +145,20 @@ export async function logout(req, res) {
   });
 }
 
+export function getSocketToken(req, res) {
+  try {
+    const token = jwt.sign(
+      { userId: req.user._id, purpose: "socket" },
+      process.env.JWT_SECRET,
+      { expiresIn: "5m" }
+    );
+    res.json({ token });
+  } catch (error) {
+    console.error("getSocketToken:", error);
+    res.status(500).json({ message: "Could not create a socket session" });
+  }
+}
+
 export async function onboard(req, res) {
   try {
     const userId = req.user._id;

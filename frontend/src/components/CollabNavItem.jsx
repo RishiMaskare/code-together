@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link, useLocation } from "react-router";
 import { CodeIcon } from "lucide-react";
-import { getMyCollabs } from "../lib/collab.api";
+import { getMyCollabs, isCollabAccepted } from "../lib/collab.api";
 
 const CollabNavItem = () => {
   const { pathname } = useLocation();
@@ -11,7 +11,7 @@ const CollabNavItem = () => {
     refetchInterval: 30000,
   });
 
-  const activeCollabs = collabs.filter((c) => c.status === "active");
+  const activeCollabs = collabs.filter(isCollabAccepted);
   const pendingCollabs = collabs.filter((c) => c.status === "pending");
   const isActive = pathname.startsWith("/collab");
 

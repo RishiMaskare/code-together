@@ -2,7 +2,7 @@ import React, { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router";
 import useAuthUser from "../hooks/useAuthUser";
 import { useQuery } from "@tanstack/react-query";
-import { getStreamToken } from "../lib/api";
+import { getDirectVideoCallToken } from "../lib/api";
 
 import {
   StreamVideo,
@@ -18,62 +18,105 @@ import "@stream-io/video-react-sdk/dist/css/styles.css";
 import toast from "react-hot-toast";
 import PageLoader from "../components/PageLoader";
 
-const STREAM_API_KEY = import.meta.env.VITE_STREAM_API_KEY;
-
 const CallPage = () => {
   const { id: callId } = useParams();
   const [client, setClient] = useState(null);
   const [call, setCall] = useState(null);
   const [isConnecting, setIsConnecting] = useState(true);
+  const [connectionError, setConnectionError] = useState("");
 
   const { authUser, isLoading } = useAuthUser();
 
-  const { data: tokenData } = useQuery({
-    queryKey: ["streamToken"],
-    queryFn: getStreamToken,
-    enabled: !!authUser,
+  const {
+    data: tokenData,
+    isLoading: isTokenLoading,
+    isError: tokenError,
+  } = useQuery({
+    queryKey: ["videoCallToken", authUser?._id, callId],
+    queryFn: () => getDirectVideoCallToken(callId),
+    enabled: !!authUser && !!callId,
   });
 
   useEffect(() => {
+    if (isLoading || isTokenLoading) return undefined;
+
+    if (!authUser || !callId || !tokenData?.token || !tokenData?.apiKey) {
+      const message = tokenError || !tokenData?.token
+        ? "Could not load your video-call credentials. Please refresh and try again."
+        : "Video calling is not configured for this application.";
+      setConnectionError(message);
+      setIsConnecting(false);
+      return undefined;
+    }
+
+    let disposed = false;
+    let videoClient;
+    let callInstance;
+    let joinPromise;
+    setIsConnecting(true);
+    setConnectionError("");
+
     const initCall = async () => {
-      if (!tokenData.token || !authUser || !callId) return;
-
       try {
-        console.log("Initializing Stream Video client...");
-
         const user = {
-          id: authUser._id,
+          id: String(authUser._id),
           name: authUser.fullName,
           image: authUser.profilePic,
         };
 
-        const videoClient = new StreamVideoClient({
-          apiKey: STREAM_API_KEY,
+        videoClient = new StreamVideoClient({
+          apiKey: tokenData.apiKey,
           user,
           token: tokenData.token,
         });
 
-        const callInstance = videoClient.call("default", callId);
+        callInstance = videoClient.call("default", callId);
+        joinPromise = callInstance.join({
+          create: true,
+          data: { settings_override: { screensharing: { enabled: true } } },
+        });
+        await joinPromise;
 
-        await callInstance.join({ create: true });
-
-        console.log("Joined call successfully");
-
+        if (disposed) return;
         setClient(videoClient);
         setCall(callInstance);
       } catch (error) {
+        if (disposed) return;
         console.error("Error joining call:", error);
+        setConnectionError("Could not join the call. Check your connection and try again.");
         toast.error("Could not join the call. Please try again.");
       } finally {
-        setIsConnecting(false);
+        if (!disposed) setIsConnecting(false);
       }
     };
-    
+
     initCall();
 
-  }, [authUser, callId, tokenData]);
+    return () => {
+      disposed = true;
+      void (async () => {
+        if (joinPromise) {
+          try {
+            await joinPromise;
+          } catch (cleanupError) {
+            console.warn("Video call join did not finish before cleanup:", cleanupError);
+          }
+        }
+        try {
+          await callInstance?.leave();
+        } catch (cleanupError) {
+          console.warn("Could not leave video call cleanly:", cleanupError);
+        }
+        try {
+          await videoClient?.disconnectUser();
+        } catch (cleanupError) {
+          console.warn("Could not disconnect video client cleanly:", cleanupError);
+        }
+      })();
+    };
+  }, [authUser, callId, isLoading, isTokenLoading, tokenData, tokenError]);
 
-  if (isLoading || isConnecting) return <PageLoader />;
+  if (isLoading || isTokenLoading || isConnecting) return <PageLoader />;
 
   return (
     <div className="h-screen flex flex-col items-center justify-center">
@@ -85,8 +128,8 @@ const CallPage = () => {
             </StreamCall>
           </StreamVideo>
         ) : (
-          <div className=" flex items-center justify-center h-full">
-            <p>Could not initialize call. Please refresh or try again later.</p>
+          <div className="flex items-center justify-center h-full p-6 text-center">
+            <p>{connectionError || "Could not initialize call. Please refresh or try again later."}</p>
           </div>
         )}
       </div>
@@ -100,7 +143,9 @@ const CallContent = () => {
 
   const navigate = useNavigate();
 
-  if (callingState === CallingState.LEFT) return navigate("/home");
+  useEffect(() => {
+    if (callingState === CallingState.LEFT) navigate("/home");
+  }, [callingState, navigate]);
 
   return (
     <StreamTheme>

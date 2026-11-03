@@ -59,7 +59,7 @@ test("collaboration rooms only admit authenticated participants after acceptance
   assert.equal(socket.rooms.has("collab:pending-collab"), true);
   assert.deepEqual(emitted.find((event) => event.event === "collab:joined"), {
     event: "collab:joined",
-    payload: { collabId: "pending-collab" },
+    payload: { collabId: "pending-collab", hasState: false },
   });
 
   await handlers.get("collab:leave")({ collabId: "pending-collab" });
@@ -116,6 +116,8 @@ test("collaboration events only broadcast to accepted rooms and use socket ident
         filePath: "main.js",
         language: "javascript",
         userId: "user-1",
+        files: [{ path: "main.js", content: "updated" }],
+        revision: 1,
       },
     }]
   );
@@ -153,9 +155,66 @@ test("a newly joined accepted participant receives the latest editor snapshot", 
       filePath: "main.js",
       language: "javascript",
       userId: "owner",
+      files: [{ path: "main.js", content: "const live = true;" }],
+      revision: 1,
     },
     }
   );
+});
+
+test("a new participant receives the complete latest local workspace", async () => {
+  const owner = createCollabSocket("owner");
+  const newParticipant = createCollabSocket("new-participant");
+  const io = { to: () => ({ emit() {} }) };
+  const options = { canJoinCollab: async () => true };
+  registerCollabSocketHandlers(io, owner.socket, options);
+  registerCollabSocketHandlers(io, newParticipant.socket, options);
+
+  await owner.handlers.get("collab:join")({ collabId: "workspace-test" });
+  owner.handlers.get("collab:workspace_initial")({
+    collabId: "workspace-test",
+    files: [
+      { path: "main.js", content: "console.log('hello');" },
+      { path: "utils.js", content: "export const add = (a, b) => a + b;" },
+    ],
+    filePath: "main.js",
+    content: "console.log('hello');",
+    language: "javascript",
+  });
+  await newParticipant.handlers.get("collab:join")({ collabId: "workspace-test" });
+
+  assert.deepEqual(
+    newParticipant.emitted.find((event) => event.event === "collab:sync_state").payload.files,
+    [
+      { path: "main.js", content: "console.log('hello');" },
+      { path: "utils.js", content: "export const add = (a, b) => a + b;" },
+    ]
+  );
+});
+
+test("editor snapshots carry ordered revisions and update the workspace", async () => {
+  const { socket, handlers, emitted } = createCollabSocket();
+  const io = { to: () => ({ emit() {} }) };
+  registerCollabSocketHandlers(io, socket, { canJoinCollab: async () => true });
+  await handlers.get("collab:join")({ collabId: "revision-test" });
+
+  handlers.get("collab:workspace_initial")({
+    collabId: "revision-test",
+    files: [{ path: "main.js", content: "one" }],
+    filePath: "main.js",
+    content: "one",
+    language: "javascript",
+  });
+  handlers.get("collab:editor_change")({
+    collabId: "revision-test",
+    content: "two",
+    filePath: "main.js",
+    language: "javascript",
+  });
+
+  const updates = emitted.filter((event) => event.event === "collab:editor_change");
+  assert.equal(updates[0].payload.revision, 2);
+  assert.deepEqual(updates[0].payload.files, [{ path: "main.js", content: "two" }]);
 });
 
 test("share output is accepted only by the invited participant", async () => {

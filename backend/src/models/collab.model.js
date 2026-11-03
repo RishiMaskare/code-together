@@ -26,7 +26,7 @@ const collabSchema = new mongoose.Schema(
     // Status of the collab: pending | active | closed
     status: {
       type: String,
-      enum: ["pending", "active", "closed"],
+      enum: ["pending", "accepted", "active", "closed"],
       default: "pending",
     },
     // who sent the collab request

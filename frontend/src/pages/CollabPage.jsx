@@ -12,7 +12,7 @@ import {
 
 import {
   getCollabById, createCollabRepo, getRepoFiles,
-  getFileContent, commitFile,
+  getFileContent, commitFile, isCollabAccepted,
 } from "../lib/collab.api";
 import { axiosInstance } from "../lib/axios";
 import useAuthUser from "../hooks/useAuthUser.js";
@@ -37,6 +37,12 @@ const extToLang = (path) => {
   const ext = "." + path.split(".").pop().toLowerCase();
   const found = Object.entries(LANGS).find(([, v]) => v.ext === ext);
   return found ? found[0] : "plaintext";
+};
+
+const rememberRemoteContent = (contents, content) => {
+  if (typeof content !== "string") return;
+  contents.add(content);
+  if (contents.size > 64) contents.delete(contents.values().next().value);
 };
 
 // ── Local file tree builder ───────────────────────────────────────────────────
@@ -144,7 +150,7 @@ const CollabPage = () => {
   const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
   const { authUser } = useAuthUser();
-  const { socket } = useSocket();
+  const { socket, isConnected, connectionError } = useSocket();
   const queryClient = useQueryClient();
   const editorRef = useRef(null);
 
@@ -197,6 +203,9 @@ const CollabPage = () => {
   const [incomingShare, setIncomingShare] = useState(null);
   const shareStateRef = useRef({});
   const editorStateRef = useRef({});
+  const localFilesRef = useRef(localFiles);
+  const collabRevisionRef = useRef(0);
+  const remoteEditorContentsRef = useRef(new Set());
 
   // toast
   const [toast, setToast] = useState(null);
@@ -230,10 +239,12 @@ const CollabPage = () => {
 
   useEffect(() => { if (collab?.githubRepoName) setMode("github"); }, [collab?.githubRepoName]);
 
+  const isAcceptedCollab = isCollabAccepted(collab);
   const partner = collab?.participants?.find(p => String(p._id || p) !== String(authUser?._id));
   const amIOwner = String(collab?.githubOwner) === String(authUser?._id);
   shareStateRef.current = { shareActive, viewingFrom };
   editorStateRef.current = { editorContent, selectedFile, lang };
+  localFilesRef.current = localFiles;
 
   // ── Connect GitHub ────────────────────────────────────────────────────────────
   const connectGithub = () => {
@@ -335,6 +346,12 @@ const CollabPage = () => {
     setEditorContent(content);
     setSelectedFile(name);
     setLang(newFileLang);
+    socket?.emit("collab:file_selected", {
+      collabId,
+      filePath: name,
+      content,
+      language: newFileLang,
+    });
     setShowNewFile(false);
     setNewFileName("");
     showToast(`Created ${name}`, "success");
@@ -350,6 +367,7 @@ const CollabPage = () => {
         setLang(extToLang(remaining[0].path));
       } else { setEditorContent(""); setSelectedFile(null); }
     }
+    socket?.emit("collab:file_removed", { collabId, filePath: path });
     showToast(`Deleted ${path}`, "info");
   };
 
@@ -359,6 +377,11 @@ const CollabPage = () => {
       showToast("Invalid or duplicate name", "error"); return;
     }
     setLocalFiles(p => p.map(f => f.path === renameTarget.path ? { ...f, path: newPath } : f));
+    socket?.emit("collab:file_renamed", {
+      collabId,
+      oldPath: renameTarget.path,
+      newPath,
+    });
     if (selectedFile === renameTarget.path) { setSelectedFile(newPath); setLang(extToLang(newPath)); }
     setShowRename(false); setRenameTarget(null); setNewFileName("");
     showToast(`Renamed to ${newPath}`, "success");
@@ -367,6 +390,7 @@ const CollabPage = () => {
   // ── Editor change ─────────────────────────────────────────────────────────────
   const onEditorChange = (val) => {
     const v = val || "";
+    if (remoteEditorContentsRef.current.delete(v)) return;
     setEditorContent(v);
     setIsDirty(true);
     if (mode === "local") setLocalFiles(p => p.map(f => f.path === selectedFile ? { ...f, content: v } : f));
@@ -376,6 +400,18 @@ const CollabPage = () => {
         content: v,
         filePath: selectedFile,
         language: lang,
+      });
+    }
+  };
+
+  const selectLanguage = (nextLanguage) => {
+    setLang(nextLanguage);
+    if (selectedFile) {
+      socket?.emit("collab:file_selected", {
+        collabId,
+        filePath: selectedFile,
+        content: editorContent,
+        language: nextLanguage,
       });
     }
   };
@@ -455,53 +491,111 @@ const CollabPage = () => {
   };
 
   useEffect(() => {
-    if (!socket || !authUser?._id || collab?.status !== "active") return;
+    if (!socket || !authUser?._id || !isAcceptedCollab) return;
 
-    const onEditorChg = ({ content, filePath, language, userId }) => {
+    const acceptRevision = (revision) => {
+      if (!Number.isInteger(revision)) return true;
+      if (revision <= collabRevisionRef.current) return false;
+      collabRevisionRef.current = revision;
+      return true;
+    };
+    const onEditorChg = ({ content, filePath, language, userId, files, revision }) => {
+      if (!acceptRevision(revision)) return;
       const current = collaborationRef.current;
+      if (current.mode === "local") {
+        setLocalFiles(Array.isArray(files)
+          ? files
+          : (currentFiles) => currentFiles.map((file) =>
+              file.path === filePath ? { ...file, content } : file
+            ));
+      }
       if (shareStateRef.current.viewingFrom === userId || current.selectedFile === filePath) {
+        rememberRemoteContent(remoteEditorContentsRef.current, content);
         setEditorContent(content);
         if (language) setLang(language);
-        if (current.mode === "local") {
-          setLocalFiles((files) =>
-            files.map((file) =>
-              file.path === filePath ? { ...file, content } : file
-            )
-          );
-        }
       }
     };
-    const onFileSelected = ({ filePath, content, language, userId }) => {
-      if (String(userId) === String(authUser._id)) return;
+    const onFileSelected = ({ filePath, content, language, files, revision }) => {
+      if (!acceptRevision(revision)) return;
       setSelectedFile(filePath);
       setLang(language || extToLang(filePath));
       if (typeof content === "string") {
+        rememberRemoteContent(remoteEditorContentsRef.current, content);
         setEditorContent(content);
         setIsDirty(false);
-        setLocalFiles((files) => {
-          const existing = files.find((file) => file.path === filePath);
+        setLocalFiles((currentFiles) => {
+          if (Array.isArray(files)) return files;
+          const existing = currentFiles.find((file) => file.path === filePath);
           return existing
-            ? files.map((file) =>
+            ? currentFiles.map((file) =>
                 file.path === filePath ? { ...file, content } : file
               )
-            : [...files, { path: filePath, content }];
+            : [...currentFiles, { path: filePath, content }];
         });
       }
     };
-    const onSyncState = ({ content, filePath, language }) => {
+    const onSyncState = ({ content, filePath, language, files, revision }) => {
+      if (!acceptRevision(revision)) return;
       if (typeof content !== "string" || !filePath) return;
       setSelectedFile(filePath);
+      rememberRemoteContent(remoteEditorContentsRef.current, content);
       setEditorContent(content);
       setLang(language || extToLang(filePath));
       setIsDirty(false);
-      setLocalFiles((files) => {
-        const existing = files.find((file) => file.path === filePath);
+      setLocalFiles((currentFiles) => {
+        if (Array.isArray(files) && collaborationRef.current.mode === "local") return files;
+        const existing = currentFiles.find((file) => file.path === filePath);
         return existing
-          ? files.map((file) =>
+          ? currentFiles.map((file) =>
               file.path === filePath ? { ...file, content } : file
             )
-          : [...files, { path: filePath, content }];
+          : [...currentFiles, { path: filePath, content }];
       });
+    };
+    const onJoined = ({ hasState }) => {
+      if (hasState) return;
+      const currentEditor = editorStateRef.current;
+      if (!currentEditor.selectedFile) return;
+      const currentFiles = collaborationRef.current.mode === "local"
+        ? localFilesRef.current
+        : [];
+      const files = currentFiles.some((file) => file.path === currentEditor.selectedFile)
+        ? currentFiles.map((file) => file.path === currentEditor.selectedFile
+          ? { ...file, content: currentEditor.editorContent }
+          : file)
+        : [...currentFiles, {
+            path: currentEditor.selectedFile,
+            content: currentEditor.editorContent,
+          }];
+      socket.emit("collab:workspace_initial", {
+        collabId,
+        files,
+        filePath: currentEditor.selectedFile,
+        content: currentEditor.editorContent,
+        language: currentEditor.lang,
+      });
+    };
+    const onFileRemoved = ({ filePath, selectedFile: nextFile, content, language, files, revision }) => {
+      if (!acceptRevision(revision)) return;
+      setLocalFiles(Array.isArray(files)
+        ? files
+        : (currentFiles) => currentFiles.filter((file) => file.path !== filePath));
+      if (collaborationRef.current.selectedFile === filePath) {
+        setSelectedFile(nextFile || null);
+        rememberRemoteContent(remoteEditorContentsRef.current, content || "");
+        setEditorContent(content || "");
+        setLang(language || extToLang(nextFile));
+        setIsDirty(false);
+      }
+    };
+    const onFileRenamed = ({ oldPath, newPath, files, revision }) => {
+      if (!acceptRevision(revision)) return;
+      setLocalFiles(Array.isArray(files)
+        ? files
+        : (currentFiles) => currentFiles.map((file) =>
+            file.path === oldPath ? { ...file, path: newPath } : file
+          ));
+      if (collaborationRef.current.selectedFile === oldPath) setSelectedFile(newPath);
     };
     const onShareReq = ({ fromUserId, toUserId }) => {
       if (String(toUserId) === String(authUser._id)) setIncomingShare(fromUserId);
@@ -541,6 +635,7 @@ const CollabPage = () => {
     // Shared execution output is visible to both participants after acceptance.
     const onShareState = ({ content, filePath, language, userId }) => {
       if (shareStateRef.current.viewingFrom !== userId) return;
+      rememberRemoteContent(remoteEditorContentsRef.current, content);
       setEditorContent(content);
       setSelectedFile(filePath);
       setLang(language || extToLang(filePath));
@@ -570,11 +665,17 @@ const CollabPage = () => {
     };
 
     const joinRoom = () => {
-      socket.emit("collab:join", { collabId, userId: authUser._id });
+      collabRevisionRef.current = 0;
+      socket.emit("collab:join", { collabId });
     };
 
+    const onJoinDenied = ({ message }) => showToast(message || "Unable to join this collaboration.", "error");
+    socket.on("collab:joined", onJoined);
+    socket.on("collab:join_denied", onJoinDenied);
     socket.on("collab:editor_change", onEditorChg);
     socket.on("collab:file_selected", onFileSelected);
+    socket.on("collab:file_removed", onFileRemoved);
+    socket.on("collab:file_renamed", onFileRenamed);
     socket.on("collab:sync_state", onSyncState);
     socket.on("collab:share_request", onShareReq);
     socket.on("collab:share_accepted", onShareAccepted);
@@ -590,8 +691,12 @@ const CollabPage = () => {
     return () => {
       socket.emit("collab:leave", { collabId, userId: authUser._id });
       socket.off("connect", joinRoom);
+      socket.off("collab:joined", onJoined);
+      socket.off("collab:join_denied", onJoinDenied);
       socket.off("collab:editor_change", onEditorChg);
       socket.off("collab:file_selected", onFileSelected);
+      socket.off("collab:file_removed", onFileRemoved);
+      socket.off("collab:file_renamed", onFileRenamed);
       socket.off("collab:sync_state", onSyncState);
       socket.off("collab:share_request", onShareReq);
       socket.off("collab:share_accepted", onShareAccepted);
@@ -602,7 +707,7 @@ const CollabPage = () => {
       socket.off("collab:updated", onUpdated);
       socket.off("collab:run_output", onRunOutput);
     };
-  }, [socket, authUser?._id, collabId, collab?.status, showToast, queryClient]);
+  }, [socket, authUser?._id, collabId, isAcceptedCollab, showToast, queryClient]);
 
   // screen share helpers
   const requestShare = () => {
@@ -638,7 +743,7 @@ const CollabPage = () => {
 
   if (loadingCollab) return <div className="flex justify-center items-center h-screen"><span className="loading loading-spinner loading-lg" /></div>;
   if (!collab) return <div className="flex justify-center items-center h-screen"><p>Collab not found.</p></div>;
-  if (collab.status !== "active") {
+  if (!isCollabAccepted(collab)) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center gap-4 p-6 text-center">
         <h1 className="text-2xl font-semibold">
@@ -776,6 +881,12 @@ const CollabPage = () => {
           <span className={`badge badge-sm ${mode === "github" ? "badge-success" : "badge-warning"}`}>
             {mode === "github" ? "📁 GitHub" : "💾 Local"}
           </span>
+          <span
+            className={`badge badge-sm ${isConnected ? "badge-success" : "badge-warning"}`}
+            title={connectionError || undefined}
+          >
+            {isConnected ? "Live connected" : connectionError ? "Reconnecting" : "Connecting"}
+          </span>
         </div>
 
         <div className="flex items-center gap-2">
@@ -790,7 +901,7 @@ const CollabPage = () => {
           </div>
 
           {/* Language selector */}
-          <select className="select select-bordered select-xs" value={lang} onChange={e => setLang(e.target.value)}>
+          <select className="select select-bordered select-xs" value={lang} onChange={e => selectLanguage(e.target.value)}>
             {Object.entries(LANGS).map(([k, v]) => <option key={k} value={k}>{v.name}</option>)}
           </select>
 

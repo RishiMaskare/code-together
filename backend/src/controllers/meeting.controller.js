@@ -2,8 +2,9 @@ import crypto from "crypto";
 import Collab from "../models/Collab.js";
 import Meeting from "../models/Meeting.js";
 import MeetingMessage from "../models/MeetingMessage.js";
-import { generateStreamToken } from "../lib/stream.js";
-import { ensureVideoCall } from "../lib/streamVideo.js";
+import { ensureVideoCall, generateVideoCallToken } from "../lib/streamVideo.js";
+import { isStreamChatChannelMember } from "../lib/stream.js";
+import { isCollabActive } from "../lib/collabStatus.js";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -13,6 +14,9 @@ const oid = (v) => String(v && (v._id || v));
 async function resolveRoom(roomId, userId) {
   const collab = await Collab.findById(roomId);
   if (!collab) return { error: 404, message: "Room not found" };
+  if (!isCollabActive(collab.status)) {
+    return { error: 409, message: "Accept the collaboration request before starting a meeting" };
+  }
   // The room creator (requester) is the authoritative host and is always a member,
   // even though the Collab schema keeps `requester` separate from the `participants` array.
   const isHost = oid(collab.requester) === oid(userId);
@@ -145,10 +149,7 @@ export async function requestJoin(req, res) {
     if (error) return res.status(error).json({ message });
 
     const existing = meeting.participants.find((p) => oid(p.user) === oid(userId));
-
-    // A declined/removed/locked participant cannot self-admit; they must be admitted by the host.
     if (existing && existing.state === "admitted") {
-      // Re-authorization path (e.g. after a refresh) — already allowed in.
       return res.status(200).json({ state: "admitted", meeting: serializeMeeting(meeting) });
     }
 
@@ -156,28 +157,78 @@ export async function requestJoin(req, res) {
       return res.status(403).json({ message: "The meeting is locked to new join requests" });
     }
 
+    const joinedAt = new Date();
     if (existing) {
-      // requested / declined / left / removed -> move back to requested so the host can re-admit.
-      existing.state = "requested";
-      existing.updatedAt = new Date();
+      existing.state = "admitted";
+      existing.joinedAt = joinedAt;
+      existing.updatedAt = joinedAt;
     } else {
       meeting.participants.push({
         user: userId,
         name: req.user.fullName,
         avatar: req.user.profilePic || "",
         role: "participant",
-        state: "requested",
+        state: "admitted",
+        joinedAt,
       });
     }
     await meeting.save();
 
     const view = serializeMeeting(meeting);
     const io = req.app.get("io");
-    ioEmit(io, "meeting:join-requested", { meeting: view }, meeting.roomId);
+    ioEmit(io, "meeting:participant-admitted", {
+      meeting: view,
+      userId: oid(userId),
+    }, meeting.roomId);
 
-    res.status(200).json({ state: "requested", meeting: view });
+    res.status(200).json({ state: "admitted", meeting: view });
   } catch (err) {
     console.error("[meeting] requestJoin:", err);
+    res.status(500).json({ message: "Internal server error" });
+  }
+}
+
+/** POST /api/meetings/:meetingId/decline-invite */
+export async function declineMeetingInvite(req, res) {
+  try {
+    const userId = req.user._id;
+    const meeting = await activeMeetingById(req.params.meetingId);
+    if (!meeting) return res.status(404).json({ message: "Meeting is not active" });
+
+    const { isHost, error, message } = await resolveRoom(meeting.roomId, userId);
+    if (error) return res.status(error).json({ message });
+    if (isHost) return res.status(403).json({ message: "The host cannot decline their own meeting" });
+
+    let participant = meeting.participants.find((entry) => oid(entry.user) === oid(userId));
+    if (participant?.state === "admitted") {
+      return res.status(409).json({ message: "You have already joined this meeting" });
+    }
+
+    if (participant) {
+      participant.state = "declined";
+      participant.updatedAt = new Date();
+    } else {
+      participant = {
+        user: userId,
+        name: req.user.fullName,
+        avatar: req.user.profilePic || "",
+        role: "participant",
+        state: "declined",
+      };
+      meeting.participants.push(participant);
+    }
+    await meeting.save();
+
+    const view = serializeMeeting(meeting);
+    const io = req.app.get("io");
+    ioEmit(io, "meeting:invite-declined", {
+      meeting: view,
+      userId: oid(userId),
+      name: req.user.fullName,
+    }, meeting.roomId);
+    res.json({ meeting: view });
+  } catch (err) {
+    console.error("[meeting] declineMeetingInvite:", err);
     res.status(500).json({ message: "Internal server error" });
   }
 }
@@ -324,7 +375,7 @@ export async function getMediaToken(req, res) {
       return res.status(403).json({ message: "Not authorized to join this meeting yet" });
     }
 
-    const token = generateStreamToken(oid(userId));
+    const token = generateVideoCallToken(meeting.streamCallId, oid(userId));
     res.json({
       token,
       apiKey: process.env.STREAM_API_KEY,
@@ -336,6 +387,32 @@ export async function getMediaToken(req, res) {
   } catch (err) {
     console.error("[meeting] getMediaToken:", err);
     res.status(500).json({ message: "Internal server error" });
+  }
+}
+
+/** GET /api/video/calls/:callId/token — authenticated token for chat calls. */
+export async function getDirectVideoCallToken(req, res) {
+  const { callId } = req.params;
+  if (!/^[\w-]{1,64}$/.test(callId)) {
+    return res.status(400).json({ message: "Invalid video call ID" });
+  }
+  if (!process.env.STREAM_API_KEY || !process.env.STREAM_API_SECRET) {
+    return res.status(503).json({ message: "Video calling is not configured" });
+  }
+  try {
+    const isMember = await isStreamChatChannelMember(callId, req.user._id);
+    if (!isMember) {
+      return res.status(403).json({ message: "Only chat participants can start this video call" });
+    }
+    res.json({
+      token: generateVideoCallToken(callId, oid(req.user._id)),
+      apiKey: process.env.STREAM_API_KEY,
+      callId,
+      userId: oid(req.user._id),
+    });
+  } catch (err) {
+    console.error("[meeting] getDirectVideoCallToken:", err);
+    res.status(500).json({ message: "Could not create video call credentials" });
   }
 }
 

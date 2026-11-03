@@ -11,6 +11,9 @@ export const getActiveMeeting = (roomId) =>
 export const requestJoin = (meetingId) =>
   axiosInstance.post(`/meetings/${meetingId}/join-request`).then((r) => r.data);
 
+export const declineMeetingInvite = (meetingId) =>
+  axiosInstance.post(`/meetings/${meetingId}/decline-invite`).then((r) => r.data);
+
 export const admitParticipant = (meetingId, userId) =>
   axiosInstance.post(`/meetings/${meetingId}/admit/${userId}`).then((r) => r.data);
 

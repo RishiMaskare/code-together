@@ -1,7 +1,11 @@
 // import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CodeIcon, CheckCircleIcon, ClockIcon } from "lucide-react";
-import { sendCollabRequest, getMyCollabs } from "../lib/collab.api";
+import {
+  getMyCollabs,
+  isCollabAccepted,
+  sendCollabRequest,
+} from "../lib/collab.api";
 import { useNavigate } from "react-router";
 
 /**
@@ -35,7 +39,7 @@ const CollabButton = ({ friendId }) => {
     },
   });
 
-  if (existingCollab?.status === "active") {
+  if (isCollabAccepted(existingCollab)) {
     return (
       <button
         className="btn btn-success btn-sm w-full mt-1"

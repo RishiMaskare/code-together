@@ -29,3 +29,13 @@ export const generateStreamToken = (userId) => {
         console.log("Error generating Stream token:",error);  
     }
 };
+
+export const isStreamChatChannelMember = async (channelId, userId) => {
+    const channel = streamClient.channel("messaging", channelId);
+    const { members = [] } = await channel.query({
+        state: false,
+        watch: false,
+        members: { limit: 100 },
+    });
+    return members.some((member) => String(member.user_id) === String(userId));
+};

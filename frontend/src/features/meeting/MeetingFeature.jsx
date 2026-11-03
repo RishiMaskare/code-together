@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useEffect } from "react";
 import {
   PhoneIcon, PhoneOffIcon, VideoIcon, XIcon, CheckIcon, UsersIcon,
 } from "lucide-react";
@@ -6,7 +6,12 @@ import { useMeeting } from "./useMeeting.js";
 import MeetingRoom from "./MeetingRoom.jsx";
 
 // ── Non-blocking incoming-meeting popup ──────────────────────────────────────
-function IncomingMeetingPopup({ meeting, hostName, onJoin, onDecline, isJoining }) {
+function IncomingMeetingPopup({ meeting, hostName, onJoin, onDecline, isJoining, isDeclining }) {
+  useEffect(() => {
+    const timer = setTimeout(onDecline, 45_000);
+    return () => clearTimeout(timer);
+  }, [meeting.id, onDecline]);
+
   return (
     <div className="fixed bottom-6 right-6 z-[60] w-80 max-w-[calc(100vw-2rem)]">
       <div className="card bg-base-100 shadow-2xl border border-base-300 animate-[slideIn_.2s_ease-out]">
@@ -16,7 +21,7 @@ function IncomingMeetingPopup({ meeting, hostName, onJoin, onDecline, isJoining 
             <span className="relative inline-flex rounded-full size-3 bg-white" />
           </span>
           <h3 className="font-bold text-sm flex-1 truncate">Incoming meeting</h3>
-          <button className="opacity-70 hover:opacity-100" onClick={onDecline} aria-label="Dismiss">
+          <button className="opacity-70 hover:opacity-100" onClick={onDecline} aria-label="Decline" disabled={isDeclining}>
             <XIcon className="size-4" />
           </button>
         </div>
@@ -29,15 +34,15 @@ function IncomingMeetingPopup({ meeting, hostName, onJoin, onDecline, isJoining 
             </div>
             <div className="min-w-0">
               <p className="font-semibold text-sm truncate">{hostName || "The host"}</p>
-              <p className="text-xs opacity-60">is meeting in room {meeting.roomId}</p>
+              <p className="text-xs opacity-60">is meeting in room {meeting.roomId}. This invite expires in 45 seconds.</p>
             </div>
           </div>
           <div className="flex gap-2">
             <button className="btn btn-success btn-sm flex-1 gap-1" onClick={onJoin} disabled={isJoining}>
               {isJoining ? <span className="loading loading-spinner loading-xs" /> : <><PhoneIcon className="size-4" /> Join</>}
             </button>
-            <button className="btn btn-error btn-outline btn-sm flex-1 gap-1" onClick={onDecline}>
-              <PhoneOffIcon className="size-4" /> Decline
+            <button className="btn btn-error btn-outline btn-sm flex-1 gap-1" onClick={onDecline} disabled={isDeclining}>
+              {isDeclining ? <span className="loading loading-spinner loading-xs" /> : <PhoneOffIcon className="size-4" />} Decline
             </button>
           </div>
         </div>
@@ -151,6 +156,7 @@ const MeetingFeature = ({ roomId, authUser, socket, roomHostId }) => {
           onJoin={m.joinMeeting}
           onDecline={m.dismissIncoming}
           isJoining={m.isJoining}
+          isDeclining={m.isDeclining}
         />
       )}
 

@@ -1,8 +1,12 @@
 import Collab from "../models/Collab.js";
 import User from "../models/User.js";
 import { Octokit } from "@octokit/rest";
-import { onlineUsers } from "../lib/collab.socket.js";
+import { ACTIVE_COLLAB_STATUSES } from "../lib/collabStatus.js";
 import { GoogleGenerativeAI } from "@google/generative-ai";
+
+const emitToUser = (io, userId, event, payload) => {
+  if (io && userId) io.to(`user:${String(userId)}`).emit(event, payload);
+};
 
 // ─── Collab lifecycle ─────────────────────────────────────────────────────────
 
@@ -16,7 +20,7 @@ export const sendCollabRequest = async (req, res) => {
 
     const existing = await Collab.findOne({
       participants: { $all: [myId, friendId] },
-      status: { $in: ["pending", "active"] },
+      status: { $in: ["pending", ...ACTIVE_COLLAB_STATUSES] },
     });
     if (existing)
       return res.status(400).json({ message: "A collab already exists between you two." });
@@ -25,13 +29,10 @@ export const sendCollabRequest = async (req, res) => {
     await collab.populate("participants", "-password -githubAccessToken");
 
     const io = req.app.get("io");
-    const socketId = onlineUsers.get(friendId.toString());
-    if (io && socketId) {
-      io.to(socketId).emit("collab:new_request", {
-        collab,
-        requester: collab.participants.find(p => p._id.toString() === myId.toString()),
-      });
-    }
+    emitToUser(io, friendId, "collab:new_request", {
+      collab,
+      requester: collab.participants.find(p => p._id.toString() === myId.toString()),
+    });
     res.status(201).json(collab);
   } catch (err) {
     console.error("sendCollabRequest:", err);
@@ -42,20 +43,35 @@ export const sendCollabRequest = async (req, res) => {
 export const acceptCollabRequest = async (req, res) => {
   try {
     const { collabId } = req.params;
-    const collab = await Collab.findById(collabId);
-    if (!collab) return res.status(404).json({ message: "Collab not found" });
-    if (!collab.participants.map(String).includes(req.user._id.toString()))
-      return res.status(403).json({ message: "Not authorized" });
-    if (collab.status !== "pending" || String(collab.requester) === String(req.user._id))
-      return res.status(403).json({ message: "Only the invited user can accept this request" });
+    const userId = String(req.user._id);
+    const collab = await Collab.findOneAndUpdate(
+      {
+        _id: collabId,
+        participants: req.user._id,
+        requester: { $ne: req.user._id },
+        status: "pending",
+      },
+      { $set: { status: "accepted" } },
+      { new: true, runValidators: true }
+    ).populate("participants", "-password -githubAccessToken");
 
-    collab.status = "active";
-    await collab.save();
-    await collab.populate("participants", "-password -githubAccessToken");
+    if (!collab) {
+      const current = await Collab.findById(collabId).select("participants requester status");
+      if (!current) return res.status(404).json({ message: "Collab not found" });
+      if (
+        !current.participants.some((participant) => String(participant._id || participant) === userId) ||
+        String(current.requester) === userId
+      ) {
+        return res.status(403).json({ message: "Only the invited user can accept this request" });
+      }
+      return res.status(409).json({ message: "This collaboration request is no longer pending" });
+    }
 
     const io = req.app.get("io");
-    const socketId = onlineUsers.get(collab.requester.toString());
-    if (io && socketId) io.to(socketId).emit("collab:request_accepted", { collab });
+    const event = { collab };
+    collab.participants.forEach((participant) => {
+      emitToUser(io, participant._id || participant, "collab:request_accepted", event);
+    });
 
     res.json(collab);
   } catch (err) {
@@ -67,21 +83,35 @@ export const acceptCollabRequest = async (req, res) => {
 export const rejectCollabRequest = async (req, res) => {
   try {
     const { collabId } = req.params;
-    const collab = await Collab.findById(collabId);
-    if (!collab) return res.status(404).json({ message: "Collab not found" });
-    if (
-      collab.status !== "pending" ||
-      !collab.participants.map(String).includes(req.user._id.toString()) ||
-      String(collab.requester) === String(req.user._id)
-    ) {
+    const collab = await Collab.findOneAndUpdate(
+      {
+        _id: collabId,
+        participants: req.user._id,
+        requester: { $ne: req.user._id },
+        status: "pending",
+      },
+      { $set: { status: "closed" } },
+      { new: true, runValidators: true }
+    );
+    if (!collab) {
+      const current = await Collab.findById(collabId).select("participants requester status");
+      if (!current) return res.status(404).json({ message: "Collab not found" });
+      if (
+        !current.participants.some((participant) => String(participant._id || participant) === String(req.user._id)) ||
+        String(current.requester) === String(req.user._id)
+      ) {
+        return res.status(403).json({ message: "Only the invited user can reject this request" });
+      }
+      if (current.status !== "pending") {
+        return res.status(409).json({ message: "This collaboration request is no longer pending" });
+      }
       return res.status(403).json({ message: "Only the invited user can reject this request" });
     }
-    collab.status = "closed";
-    await collab.save();
 
     const io = req.app.get("io");
-    const socketId = onlineUsers.get(collab.requester.toString());
-    if (io && socketId) io.to(socketId).emit("collab:request_rejected", { collabId: collab._id });
+    collab.participants.forEach((participant) => {
+      emitToUser(io, participant, "collab:request_rejected", { collabId: collab._id });
+    });
 
     res.json({ message: "Rejected" });
   } catch (err) {
@@ -93,7 +123,7 @@ export const getMyCollabs = async (req, res) => {
   try {
     const collabs = await Collab.find({
       participants: req.user._id,
-      status: { $in: ["pending", "active"] },
+      status: { $in: ["pending", ...ACTIVE_COLLAB_STATUSES] },
     }).populate("participants", "-password -githubAccessToken");
     res.json(collabs);
   } catch (err) {
@@ -479,13 +509,10 @@ export const sendTeamCollabRequest = async (req, res) => {
     const io = req.app.get("io");
     if (io) {
       friendIds.forEach(friendId => {
-        const socketId = onlineUsers.get(friendId.toString());
-        if (socketId) {
-          io.to(socketId).emit("collab:new_request", {
-            collab,
-            requester: collab.participants.find(p => p._id.toString() === myId.toString()),
-          });
-        }
+        emitToUser(io, friendId, "collab:new_request", {
+          collab,
+          requester: collab.participants.find(p => p._id.toString() === myId.toString()),
+        });
       });
     }
 
